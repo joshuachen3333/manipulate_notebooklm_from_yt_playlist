@@ -113,6 +113,7 @@ Format: `<index> <url>`
 | `add_source(url)` | Add YouTube URL to NotebookLM |
 | `wait_for_source_with_status(id)` | Wait and check if source processed OK |
 | `convert_to_traditional(text)` | 簡體 → 正體中文 using opencc |
+| `format_title_with_index(idx, title)` | Create `[001] 標題` format |
 | `whisper_fallback(url, title, dir)` | Download audio, transcribe, save |
 | `add_text_source(txt, title)` | Add text file to NotebookLM |
 
@@ -155,18 +156,24 @@ notebooklm source rename <source_id> "New Title"
 
 ## Important Notes
 
-1. **正體中文 Conversion**: Applied to:
+1. **Source Title Format**: `[001] 標題`
+   - Zero-padded 3-digit index prefix
+   - Matches index.list entry numbers
+   - Helps sort/identify sources in NotebookLM
+   - Regex to extract: `\[(\d+)\]`
+
+2. **正體中文 Conversion**: Applied to:
    - Source title in NotebookLM
    - Transcript content (txt body)
    - Filenames (mp3, txt)
 
-2. **Error Source Cleanup**: Runs at startup AND after each failure to prevent orphaned error entries
+3. **Error Source Cleanup**: Runs at startup AND after each failure to prevent orphaned error entries
 
-3. **Title Matching Unreliable**: Don't match by title to detect duplicates - playlists often have same titles for different videos
+4. **Title Matching Unreliable**: Don't match by title to detect duplicates - playlists often have same titles for different videos
 
-4. **Whisper Progress**: Uses `--verbose True` with direct terminal output to show real-time transcription
+5. **Whisper Progress**: Uses `--verbose True` with direct terminal output to show real-time transcription
 
-5. **Resume Mode (-r)**:
+6. **Resume Mode (-r)**:
    - Can omit URL (reads from index.list)
    - Skips URLs in add_source_ok.txt and add_source_video2txt.txt
 

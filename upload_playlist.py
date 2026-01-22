@@ -124,7 +124,7 @@ def delete_source(source_id: str) -> bool:
     return success
 
 
-def cleanup_error_sources() -> int:
+def cleanup_error_sources(silent: bool = False) -> int:
     """Delete all sources with error status. Returns count of deleted sources."""
     success, output = run_command(
         ["notebooklm", "source", "list", "--json"],
@@ -141,12 +141,15 @@ def cleanup_error_sources() -> int:
         if s.get("status") == "error":
             source_id = s.get("id")
             title = s.get("title", "unknown")[:40]
-            print(f"  Deleting error source: {title}... ", end="", flush=True)
+            if not silent:
+                print(f"  Deleting error source: {title}... ", end="", flush=True)
             if delete_source(source_id):
-                print("OK")
+                if not silent:
+                    print("OK")
                 deleted += 1
             else:
-                print("FAILED")
+                if not silent:
+                    print("FAILED")
 
     return deleted
 
@@ -554,6 +557,10 @@ def main():
             ok, source_id, title = add_source(video_url)
             if not ok:
                 print(f"FAILED: {source_id}")
+                # Check and clean up any error sources in the cloud
+                deleted = cleanup_error_sources(silent=True)
+                if deleted > 0:
+                    print(f"  Cleaned up {deleted} error source(s) from cloud")
                 if retry_count < max_retries:
                     retry_count += 1
                     retry_delay = delay_seconds + (retry_count - 1)  # Incremental delay
@@ -591,11 +598,17 @@ def main():
             status_ok, status = wait_for_source_with_status(source_id)
             if not status_ok or status == "error":
                 print(f"ERROR (status: {status})")
-                print(f"  WARNING: Source failed processing! Removing...")
-                if delete_source(source_id):
-                    print(f"  WARNING: Source {source_id[:8]}... deleted")
+                # Clean up all error sources (including this one)
+                deleted = cleanup_error_sources(silent=True)
+                if deleted > 0:
+                    print(f"  Cleaned up {deleted} error source(s) from cloud")
                 else:
-                    print(f"  WARNING: Could not delete source {source_id[:8]}...")
+                    # Fallback: try to delete the specific source
+                    print(f"  Deleting source {source_id[:8]}...", end=" ", flush=True)
+                    if delete_source(source_id):
+                        print("OK")
+                    else:
+                        print("FAILED")
 
                 if retry_count < max_retries:
                     retry_count += 1

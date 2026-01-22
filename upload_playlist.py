@@ -153,16 +153,16 @@ def wait_for_source_with_status(source_id: str) -> tuple[bool, str]:
     return False, "not_found"
 
 
-def record_failed_url(url: str, reason: str, failed_file: Path):
-    """Record failed URL to file for future retry."""
+def record_failed_url(index: int, url: str, failed_file: Path):
+    """Record failed URL to file with index number."""
     with open(failed_file, 'a', encoding='utf-8') as f:
-        f.write(f"{url}\t{reason}\n")
+        f.write(f"{index} {url}\n")
 
 
-def record_success_url(url: str, ok_file: Path):
-    """Record successful URL to file."""
+def record_success_url(index: int, url: str, elapsed_seconds: int, ok_file: Path):
+    """Record successful URL to file with index number and elapsed time."""
     with open(ok_file, 'a', encoding='utf-8') as f:
-        f.write(f"{url}\n")
+        f.write(f"{index} {url} {elapsed_seconds}\n")
 
 
 def write_index_list(video_urls: list[str], playlist_url: str, index_file: Path):
@@ -186,7 +186,7 @@ def read_playlist_url_from_index(index_file: Path) -> str | None:
 
 
 def load_ok_urls(ok_file: Path) -> set[str]:
-    """Load successful URLs from ok file."""
+    """Load successful URLs from ok file. Format: index url [elapsed]"""
     if not ok_file.exists():
         return set()
     urls = set()
@@ -194,12 +194,15 @@ def load_ok_urls(ok_file: Path) -> set[str]:
         for line in f:
             line = line.strip()
             if line:
-                urls.add(line)
+                # Format: "index url elapsed" - extract url (2nd field)
+                parts = line.split()
+                if len(parts) >= 2:
+                    urls.add(parts[1])
     return urls
 
 
 def load_failed_urls(failed_file: Path) -> list[str]:
-    """Load failed URLs from failed file (for retry)."""
+    """Load failed URLs from failed file (for retry). Format: index url"""
     if not failed_file.exists():
         return []
     urls = []
@@ -207,9 +210,10 @@ def load_failed_urls(failed_file: Path) -> list[str]:
         for line in f:
             line = line.strip()
             if line:
-                # Format: url\treason
-                url = line.split('\t')[0]
-                urls.append(url)
+                # Format: "index url" - extract url (2nd field)
+                parts = line.split()
+                if len(parts) >= 2:
+                    urls.append(parts[1])
     return urls
 
 
@@ -243,6 +247,8 @@ Examples:
   python3 upload_playlist.py -i 25 "https://..."      # 25 second interval
   python3 upload_playlist.py -r                       # Resume (URL from index.list)
   python3 upload_playlist.py -r "https://..."         # Resume with explicit URL
+  python3 upload_playlist.py -s "https://..."         # Stubborn: retry until success
+  python3 upload_playlist.py -r -s                    # Resume + stubborn mode
         """
     )
     parser.add_argument(
@@ -263,6 +269,11 @@ Examples:
         action="store_true",
         help="Resume from last successful URL in index.list, also retry failed URLs"
     )
+    parser.add_argument(
+        "-s", "--stubborn",
+        action="store_true",
+        help="Stubborn mode: retry failed URLs until success (頑固模式)"
+    )
     return parser.parse_args()
 
 
@@ -273,6 +284,7 @@ def main():
     url = args.url
     delay_seconds = args.interval
     resume_mode = args.resume
+    stubborn_mode = args.stubborn
 
     # File paths (in current directory)
     index_file = Path("index.list")
@@ -325,22 +337,28 @@ def main():
     print(f"Target notebook: {notebook_title} ({notebook_id[:8]}...)")
     print(f"Delay interval: {delay_seconds}s")
     print(f"Resume mode: {'ON' if resume_mode else 'OFF'}")
+    print(f"Stubborn mode: {'ON' if stubborn_mode else 'OFF'}")
 
     # 3. Get video URLs (from YouTube or index.list)
+    # video_entries: list of (index, url) tuples
+    video_entries = []
+    url_to_index = {}  # Map URL to its index number
+
     if resume_mode and index_file.exists():
         # Resume: load from index.list
         print(f"\nLoading videos from {index_file}...")
-        video_urls = []
         with open(index_file, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                if line:
-                    # Format: "1 https://..." or just URL
+                if line and not line.startswith("#"):
+                    # Format: "index url"
                     parts = line.split(maxsplit=1)
-                    url = parts[-1] if parts else ""
-                    if url.startswith("http"):
-                        video_urls.append(url)
-        print(f"Loaded {len(video_urls)} videos from index.list")
+                    if len(parts) == 2 and parts[1].startswith("http"):
+                        idx = int(parts[0])
+                        video_url = parts[1]
+                        video_entries.append((idx, video_url))
+                        url_to_index[video_url] = idx
+        print(f"Loaded {len(video_entries)} videos from index.list")
     else:
         # Fresh: extract from YouTube
         print(f"\nExtracting videos from playlist...")
@@ -352,6 +370,11 @@ def main():
 
         print(f"Found {len(video_urls)} videos")
 
+        # Build entries with index
+        for i, video_url in enumerate(video_urls, 1):
+            video_entries.append((i, video_url))
+            url_to_index[video_url] = i
+
         # Write to index.list (with playlist URL on first line)
         write_index_list(video_urls, playlist_url, index_file)
         print(f"Written to {index_file}")
@@ -359,11 +382,10 @@ def main():
     # 4. Load completed URLs from ok file
     completed_urls = load_ok_urls(ok_file)
 
-    # 5. Determine pending URLs
-    pending_urls = [u for u in video_urls if u not in completed_urls]
+    # 5. Determine pending entries (index, url)
+    pending_entries = [(idx, u) for idx, u in video_entries if u not in completed_urls]
 
     # 6. In resume mode, also retry failed URLs
-    retry_urls = []
     if resume_mode:
         failed_urls = load_failed_urls(failed_file)
         # Only retry those not already completed
@@ -373,15 +395,15 @@ def main():
             # Clear failed file since we're retrying
             clear_failed_file(failed_file)
             # Add retry URLs to pending (avoid duplicates)
-            pending_set = set(pending_urls)
+            pending_urls_set = set(u for _, u in pending_entries)
             for u in retry_urls:
-                if u not in pending_set:
-                    pending_urls.append(u)
+                if u not in pending_urls_set and u in url_to_index:
+                    pending_entries.append((url_to_index[u], u))
 
     if len(completed_urls) > 0:
-        print(f"Progress: {len(completed_urls)} completed, {len(pending_urls)} remaining")
+        print(f"Progress: {len(completed_urls)} completed, {len(pending_entries)} remaining")
 
-    if not pending_urls:
+    if not pending_entries:
         print("\nAll videos already processed!")
         print()  # Empty line suffix
         sys.exit(0)
@@ -390,61 +412,85 @@ def main():
     success_count = 0
     fail_count = 0
 
-    for i, video_url in enumerate(pending_urls, 1):
-        print(f"\n[{i}/{len(pending_urls)}] Processing: {video_url}")
+    for i, (entry_idx, video_url) in enumerate(pending_entries, 1):
+        print(f"\n[{i}/{len(pending_entries)}] #{entry_idx}: {video_url}")
 
-        # Add source (returns id and title)
-        print("  Adding source...", end=" ", flush=True)
-        ok, source_id, title = add_source(video_url)
-        if not ok:
-            print(f"FAILED: {source_id}")
-            print(f"  WARNING: Failed to add source!")
-            record_failed_url(video_url, f"add_source: {source_id}", failed_file)
-            print(f"  WARNING: Recorded to {failed_file}")
-            fail_count += 1
-            time.sleep(delay_seconds)  # Still delay on failure to avoid rate limit
-            continue
-        print(f"OK (id: {source_id[:8]}...)")
-        print(f"  Title: {title}")
+        # Track start time for elapsed calculation
+        start_time = time.time()
+        retry_count = 0
 
-        # Wait and verify source status
-        print("  Waiting for processing...", end=" ", flush=True)
-        status_ok, status = wait_for_source_with_status(source_id)
-        if not status_ok or status == "error":
-            print(f"ERROR (status: {status})")
-            print(f"  WARNING: Source failed processing! Removing...")
-            if delete_source(source_id):
-                print(f"  WARNING: Source {source_id[:8]}... deleted")
+        while True:
+            # Add source (returns id and title)
+            print("  Adding source...", end=" ", flush=True)
+            ok, source_id, title = add_source(video_url)
+            if not ok:
+                print(f"FAILED: {source_id}")
+                if stubborn_mode:
+                    retry_count += 1
+                    print(f"  STUBBORN: Retry #{retry_count}, waiting {delay_seconds}s...")
+                    time.sleep(delay_seconds)
+                    continue  # Retry the same URL
+                else:
+                    print(f"  WARNING: Failed to add source!")
+                    record_failed_url(entry_idx, video_url, failed_file)
+                    print(f"  WARNING: Recorded to {failed_file}")
+                    fail_count += 1
+                    time.sleep(delay_seconds)
+                    break  # Move to next URL
+            print(f"OK (id: {source_id[:8]}...)")
+            print(f"  Title: {title}")
+
+            # Wait and verify source status
+            print("  Waiting for processing...", end=" ", flush=True)
+            status_ok, status = wait_for_source_with_status(source_id)
+            if not status_ok or status == "error":
+                print(f"ERROR (status: {status})")
+                print(f"  WARNING: Source failed processing! Removing...")
+                if delete_source(source_id):
+                    print(f"  WARNING: Source {source_id[:8]}... deleted")
+                else:
+                    print(f"  WARNING: Could not delete source {source_id[:8]}...")
+
+                if stubborn_mode:
+                    retry_count += 1
+                    print(f"  STUBBORN: Retry #{retry_count}, waiting {delay_seconds}s...")
+                    time.sleep(delay_seconds)
+                    continue  # Retry the same URL
+                else:
+                    record_failed_url(entry_idx, video_url, failed_file)
+                    print(f"  WARNING: Recorded to {failed_file}")
+                    fail_count += 1
+                    time.sleep(delay_seconds)
+                    break  # Move to next URL
+            print(f"OK (status: {status})")
+
+            # Convert to Traditional Chinese
+            traditional_title = convert_to_traditional(title)
+            if traditional_title != title:
+                print(f"  Converting: {title} → {traditional_title}")
+
+                # Rename source
+                print("  Renaming...", end=" ", flush=True)
+                if rename_source(source_id, traditional_title):
+                    print("OK")
+                else:
+                    print("FAILED (source still added)")
             else:
-                print(f"  WARNING: Could not delete source {source_id[:8]}...")
-            record_failed_url(video_url, f"processing_error: {status}", failed_file)
-            print(f"  WARNING: Recorded to {failed_file}")
-            fail_count += 1
-            time.sleep(delay_seconds)
-            continue
-        print(f"OK (status: {status})")
+                print("  No conversion needed (already Traditional or no Chinese)")
 
-        # Convert to Traditional Chinese
-        traditional_title = convert_to_traditional(title)
-        if traditional_title != title:
-            print(f"  Converting: {title} → {traditional_title}")
+            # Calculate elapsed time
+            elapsed_seconds = int(time.time() - start_time)
 
-            # Rename source
-            print("  Renaming...", end=" ", flush=True)
-            if rename_source(source_id, traditional_title):
-                print("OK")
-            else:
-                print("FAILED (source still added)")
-        else:
-            print("  No conversion needed (already Traditional or no Chinese)")
+            # Mark as completed - record to ok file with index and elapsed time
+            record_success_url(entry_idx, video_url, elapsed_seconds, ok_file)
+            success_count += 1
+            print(f"  SUCCESS: Recorded to {ok_file} (elapsed: {elapsed_seconds}s)")
 
-        # Mark as completed - record to ok file
-        record_success_url(video_url, ok_file)
-        success_count += 1
-        print(f"  SUCCESS: Recorded to {ok_file}")
+            # Success - exit retry loop
+            break
 
         # Delay before next
-        if i < len(pending_urls):
+        if i < len(pending_entries):
             print(f"  Waiting {delay_seconds}s before next...")
             time.sleep(delay_seconds)
 
@@ -452,7 +498,7 @@ def main():
     print("\n" + "=" * 50)
     print("SUMMARY")
     print("=" * 50)
-    print(f"Total in playlist: {len(video_urls)}")
+    print(f"Total in playlist: {len(video_entries)}")
     print(f"Previously done:   {len(completed_urls)}")
     print(f"Newly succeeded:   {success_count}")
     print(f"Newly failed:      {fail_count}")

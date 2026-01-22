@@ -272,7 +272,6 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
     Returns (success, txt_file_path).
     """
     import subprocess as sp
-    import re
     import shutil
 
     # Create transcripts directory if needed
@@ -315,8 +314,8 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
 
     print(f"  WHISPER: Transcribing {actual_mp3.name}...")
 
-    # Transcribe with whisper - stream output for progress
-    process = sp.Popen(
+    # Transcribe with whisper - let output flow directly to terminal
+    result = sp.run(
         [
             "whisper",
             str(actual_mp3),
@@ -324,22 +323,10 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
             "--output_format", "txt",
             "--output_dir", str(transcripts_dir),
             "--verbose", "True"
-        ],
-        stdout=sp.PIPE,
-        stderr=sp.STDOUT,
-        text=True,
-        bufsize=1
-    )
+        ]
+    )  # No capture - output goes directly to terminal
 
-    # Show ALL whisper output in real-time
-    for line in process.stdout:
-        line = line.rstrip()
-        if line:
-            print(f"  {line}", flush=True)
-
-    process.wait()
-
-    if process.returncode != 0:
+    if result.returncode != 0:
         print(f"  WHISPER: Transcription failed")
         return False, ""
 

@@ -124,28 +124,6 @@ def delete_source(source_id: str) -> bool:
     return success
 
 
-def get_ready_source_titles() -> set[str]:
-    """Get titles of all sources with ready status from NotebookLM."""
-    success, output = run_command(
-        ["notebooklm", "source", "list", "--json"],
-        capture_json=True
-    )
-
-    if not success:
-        return set()
-
-    sources = output.get("sources", [])
-    titles = set()
-
-    for s in sources:
-        if s.get("status") == "ready":
-            title = s.get("title", "")
-            if title:
-                titles.add(title)
-
-    return titles
-
-
 def cleanup_error_sources(silent: bool = False) -> int:
     """Delete all sources with error status. Returns count of deleted sources."""
     success, output = run_command(
@@ -594,13 +572,6 @@ def main():
     video2txt_urls = load_video2txt_urls(video2txt_file)
     all_completed = completed_urls | video2txt_urls
 
-    # 4b. Get already-uploaded source titles from NotebookLM
-    print(f"\nChecking already-uploaded sources in NotebookLM...")
-    ready_titles = get_ready_source_titles()
-    if ready_titles:
-        print(f"Found {len(ready_titles)} ready source(s) in notebook")
-    else:
-        print("No ready sources found in notebook")
 
     # 5. Determine pending entries (index, url)
     pending_entries = [(idx, u) for idx, u in video_entries if u not in all_completed]
@@ -622,24 +593,6 @@ def main():
         # Track start time for elapsed calculation
         start_time = time.time()
         retry_count = 0
-
-        # Check if already uploaded by comparing title
-        if ready_titles:
-            print("  Checking if already uploaded...", end=" ", flush=True)
-            video_title = get_video_title(video_url)
-            if video_title and video_title in ready_titles:
-                print(f"FOUND")
-                print(f"  Title: {video_title}")
-                print(f"  SKIP [#{entry_idx}]: Already in notebook, recording to {ok_file}")
-                record_success_url(entry_idx, video_url, 0, ok_file)
-                success_count += 1
-                # Remove from ready_titles to avoid repeated checks
-                ready_titles.discard(video_title)
-                if i < len(pending_entries):
-                    print(f"  Waiting {delay_seconds}s before next...")
-                    time.sleep(delay_seconds)
-                continue
-            print("NOT FOUND")
 
         while True:
             # Add source (returns id and title)

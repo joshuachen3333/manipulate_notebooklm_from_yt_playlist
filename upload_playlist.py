@@ -278,8 +278,9 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
     # Create transcripts directory if needed
     transcripts_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clean title for filename
-    safe_title = "".join(c if c.isalnum() or c in ' -_' else '_' for c in video_title)[:100]
+    # Convert title to Traditional Chinese and clean for filename
+    traditional_title = convert_to_traditional(video_title)
+    safe_title = "".join(c if c.isalnum() or c in ' -_' else '_' for c in traditional_title)[:100]
     mp3_file = transcripts_dir / f"{safe_title}.mp3"
     txt_file = transcripts_dir / f"{safe_title}.txt"
 

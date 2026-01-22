@@ -223,6 +223,28 @@ def clear_failed_file(failed_file: Path):
         failed_file.unlink()
 
 
+def remove_from_failed_file(index: int, failed_file: Path):
+    """Remove a specific entry (by index) from failed file."""
+    if not failed_file.exists():
+        return
+
+    lines_to_keep = []
+    with open(failed_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line_stripped = line.strip()
+            if line_stripped:
+                parts = line_stripped.split(maxsplit=1)
+                if parts and parts[0] != str(index):
+                    lines_to_keep.append(line)
+
+    if lines_to_keep:
+        with open(failed_file, 'w', encoding='utf-8') as f:
+            f.writelines(lines_to_keep)
+    else:
+        # No lines left, remove the file
+        failed_file.unlink()
+
+
 def rename_source(source_id: str, new_title: str) -> bool:
     """Rename a source."""
     success, _ = run_command(["notebooklm", "source", "rename", source_id, new_title])
@@ -485,6 +507,10 @@ def main():
             record_success_url(entry_idx, video_url, elapsed_seconds, ok_file)
             success_count += 1
             print(f"  SUCCESS: Recorded to {ok_file} (elapsed: {elapsed_seconds}s)")
+
+            # If stubborn mode and had retries, remove from failed file (if it was there)
+            if stubborn_mode and retry_count > 0:
+                remove_from_failed_file(entry_idx, failed_file)
 
             # Success - exit retry loop
             break

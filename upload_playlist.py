@@ -449,8 +449,9 @@ def main():
                 print(f"FAILED: {source_id}")
                 if stubborn_mode:
                     retry_count += 1
-                    print(f"  STUBBORN: Retry #{retry_count}, waiting {delay_seconds}s...")
-                    time.sleep(delay_seconds)
+                    retry_delay = delay_seconds + (retry_count - 1)  # Incremental delay
+                    print(f"  STUBBORN: Retry #{retry_count}, waiting {retry_delay}s...")
+                    time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:
                     print(f"  WARNING: Failed to add source!")
@@ -475,8 +476,9 @@ def main():
 
                 if stubborn_mode:
                     retry_count += 1
-                    print(f"  STUBBORN: Retry #{retry_count}, waiting {delay_seconds}s...")
-                    time.sleep(delay_seconds)
+                    retry_delay = delay_seconds + (retry_count - 1)  # Incremental delay
+                    print(f"  STUBBORN: Retry #{retry_count}, waiting {retry_delay}s...")
+                    time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:
                     record_failed_url(entry_idx, video_url, failed_file)

@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 add_source_ok.txt
-add_source_failed.txt
+add_source_video2txt.txt
 index.list
+transcripts/

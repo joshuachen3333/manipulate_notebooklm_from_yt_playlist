@@ -153,10 +153,10 @@ def wait_for_source_with_status(source_id: str) -> tuple[bool, str]:
     return False, "not_found"
 
 
-def record_failed_url(index: int, url: str, failed_file: Path):
-    """Record failed URL to file with index number."""
-    with open(failed_file, 'a', encoding='utf-8') as f:
-        f.write(f"{index} {url}\n")
+def record_video2txt_url(index: int, url: str, elapsed_seconds: int, video2txt_file: Path):
+    """Record whisper-converted URL to file with index number and elapsed time."""
+    with open(video2txt_file, 'a', encoding='utf-8') as f:
+        f.write(f"{index} {url} {elapsed_seconds}\n")
 
 
 def record_success_url(index: int, url: str, elapsed_seconds: int, ok_file: Path):
@@ -201,48 +201,20 @@ def load_ok_urls(ok_file: Path) -> set[str]:
     return urls
 
 
-def load_failed_urls(failed_file: Path) -> list[str]:
-    """Load failed URLs from failed file (for retry). Format: index url"""
-    if not failed_file.exists():
-        return []
-    urls = []
-    with open(failed_file, 'r', encoding='utf-8') as f:
+def load_video2txt_urls(video2txt_file: Path) -> set[str]:
+    """Load whisper-converted URLs from video2txt file. Format: index url elapsed"""
+    if not video2txt_file.exists():
+        return set()
+    urls = set()
+    with open(video2txt_file, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if line:
-                # Format: "index url" - extract url (2nd field)
+                # Format: "index url elapsed" - extract url (2nd field)
                 parts = line.split()
                 if len(parts) >= 2:
-                    urls.append(parts[1])
+                    urls.add(parts[1])
     return urls
-
-
-def clear_failed_file(failed_file: Path):
-    """Clear failed file (before retry)."""
-    if failed_file.exists():
-        failed_file.unlink()
-
-
-def remove_from_failed_file(index: int, failed_file: Path):
-    """Remove a specific entry (by index) from failed file."""
-    if not failed_file.exists():
-        return
-
-    lines_to_keep = []
-    with open(failed_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            line_stripped = line.strip()
-            if line_stripped:
-                parts = line_stripped.split(maxsplit=1)
-                if parts and parts[0] != str(index):
-                    lines_to_keep.append(line)
-
-    if lines_to_keep:
-        with open(failed_file, 'w', encoding='utf-8') as f:
-            f.writelines(lines_to_keep)
-    else:
-        # No lines left, remove the file
-        failed_file.unlink()
 
 
 def rename_source(source_id: str, new_title: str) -> bool:
@@ -424,8 +396,8 @@ def main():
     # File paths (in current directory)
     index_file = Path("index.list")
     ok_file = Path("add_source_ok.txt")
-    failed_file = Path("add_source_failed.txt")
-    transcripts_dir = Path("transcripts")  # For whisper fallback
+    video2txt_file = Path("add_source_video2txt.txt")  # For whisper fallback successes
+    transcripts_dir = Path("transcripts")  # For whisper transcripts
 
     # 1. Get playlist URL (from arg or index.list)
     if url is None:
@@ -515,29 +487,16 @@ def main():
         write_index_list(video_urls, playlist_url, index_file)
         print(f"Written to {index_file}")
 
-    # 4. Load completed URLs from ok file
+    # 4. Load completed URLs from ok file and video2txt file
     completed_urls = load_ok_urls(ok_file)
+    video2txt_urls = load_video2txt_urls(video2txt_file)
+    all_completed = completed_urls | video2txt_urls
 
     # 5. Determine pending entries (index, url)
-    pending_entries = [(idx, u) for idx, u in video_entries if u not in completed_urls]
+    pending_entries = [(idx, u) for idx, u in video_entries if u not in all_completed]
 
-    # 6. In resume mode, also retry failed URLs
-    if resume_mode:
-        failed_urls = load_failed_urls(failed_file)
-        # Only retry those not already completed
-        retry_urls = [u for u in failed_urls if u not in completed_urls]
-        if retry_urls:
-            print(f"Will retry {len(retry_urls)} previously failed URLs")
-            # Clear failed file since we're retrying
-            clear_failed_file(failed_file)
-            # Add retry URLs to pending (avoid duplicates)
-            pending_urls_set = set(u for _, u in pending_entries)
-            for u in retry_urls:
-                if u not in pending_urls_set and u in url_to_index:
-                    pending_entries.append((url_to_index[u], u))
-
-    if len(completed_urls) > 0:
-        print(f"Progress: {len(completed_urls)} completed, {len(pending_entries)} remaining")
+    if len(all_completed) > 0:
+        print(f"Progress: {len(completed_urls)} direct + {len(video2txt_urls)} video2txt = {len(all_completed)} completed, {len(pending_entries)} remaining")
 
     if not pending_entries:
         print("\nAll videos already processed!")
@@ -546,7 +505,6 @@ def main():
 
     # 7. Process each video
     success_count = 0
-    fail_count = 0
 
     for i, (entry_idx, video_url) in enumerate(pending_entries, 1):
         print(f"\n[{i}/{len(pending_entries)}] #{entry_idx}: {video_url}")
@@ -578,19 +536,17 @@ def main():
                         text_ok, text_source_id = add_text_source(txt_file, traditional_title)
                         if text_ok:
                             elapsed_seconds = int(time.time() - start_time)
-                            record_success_url(entry_idx, video_url, elapsed_seconds, ok_file)
+                            record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
                             success_count += 1
-                            print(f"  SUCCESS (via whisper): Recorded to {ok_file}")
-                            remove_from_failed_file(entry_idx, failed_file)
+                            print(f"  SUCCESS (via whisper): Recorded to {video2txt_file}")
                         else:
-                            print(f"  WARNING: Add text source failed: {text_source_id}")
-                            record_failed_url(entry_idx, video_url, failed_file)
-                            fail_count += 1
+                            print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
+                            print()
+                            sys.exit(1)
                     else:
-                        print(f"  WARNING: Whisper fallback also failed!")
-                        record_failed_url(entry_idx, video_url, failed_file)
-                        fail_count += 1
-                    time.sleep(delay_seconds)
+                        print(f"\n  FATAL [#{entry_idx}]: Whisper fallback failed!")
+                        print()
+                        sys.exit(1)
                     break  # Move to next URL
             print(f"OK (id: {source_id[:8]}...)")
             print(f"  Title: {title}")
@@ -622,19 +578,17 @@ def main():
                         text_ok, text_source_id = add_text_source(txt_file, traditional_title)
                         if text_ok:
                             elapsed_seconds = int(time.time() - start_time)
-                            record_success_url(entry_idx, video_url, elapsed_seconds, ok_file)
+                            record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
                             success_count += 1
-                            print(f"  SUCCESS (via whisper): Recorded to {ok_file}")
-                            remove_from_failed_file(entry_idx, failed_file)
+                            print(f"  SUCCESS (via whisper): Recorded to {video2txt_file}")
                         else:
-                            print(f"  WARNING: Add text source failed: {text_source_id}")
-                            record_failed_url(entry_idx, video_url, failed_file)
-                            fail_count += 1
+                            print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
+                            print()
+                            sys.exit(1)
                     else:
-                        print(f"  WARNING: Whisper fallback also failed!")
-                        record_failed_url(entry_idx, video_url, failed_file)
-                        fail_count += 1
-                    time.sleep(delay_seconds)
+                        print(f"\n  FATAL [#{entry_idx}]: Whisper fallback failed!")
+                        print()
+                        sys.exit(1)
                     break  # Move to next URL
             print(f"OK (status: {status})")
 
@@ -660,9 +614,6 @@ def main():
             success_count += 1
             print(f"  SUCCESS: Recorded to {ok_file} (elapsed: {elapsed_seconds}s)")
 
-            # Remove from failed file if it was there (from previous run)
-            remove_from_failed_file(entry_idx, failed_file)
-
             # Success - exit retry loop
             break
 
@@ -672,20 +623,23 @@ def main():
             time.sleep(delay_seconds)
 
     # 8. Summary
+    # Reload video2txt count (may have been updated during this run)
+    final_video2txt_urls = load_video2txt_urls(video2txt_file)
+
     print("\n" + "=" * 50)
     print("SUMMARY")
     print("=" * 50)
     print(f"Total in playlist: {len(video_entries)}")
-    print(f"Previously done:   {len(completed_urls)}")
+    print(f"Previously done:   {len(all_completed)}")
     print(f"Newly succeeded:   {success_count}")
-    print(f"Newly failed:      {fail_count}")
 
     print(f"\nFiles:")
-    print(f"  Playlist:  {index_file.absolute()}")
-    print(f"  Succeeded: {ok_file.absolute()}")
-    if fail_count > 0:
-        print(f"  Failed:    {failed_file.absolute()}")
-        print(f"\nTo retry failed URLs, run with --resume / -r")
+    print(f"  Playlist:   {index_file.absolute()}")
+    print(f"  Direct OK:  {ok_file.absolute()}")
+    if final_video2txt_urls:
+        print(f"  Video2txt:  {video2txt_file.absolute()} ({len(final_video2txt_urls)} entries)")
+    if transcripts_dir.exists():
+        print(f"  Transcripts: {transcripts_dir.absolute()}/")
 
     print()  # Empty line suffix for readability
 

@@ -331,16 +331,11 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
         bufsize=1
     )
 
-    # Show real-time transcription output
+    # Show ALL whisper output in real-time
     for line in process.stdout:
         line = line.rstrip()
         if line:
-            # Show timestamp lines with transcribed text
-            if '-->' in line or re.match(r'\[\d+:\d+', line):
-                print(f"  {line}", flush=True)
-            # Show other progress info (like model loading, etc.)
-            elif any(kw in line.lower() for kw in ['detecting', 'loading', 'transcribing', '%']):
-                print(f"  {line}", flush=True)
+            print(f"  {line}", flush=True)
 
     process.wait()
 

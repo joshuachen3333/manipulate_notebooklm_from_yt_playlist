@@ -189,6 +189,12 @@ def record_video2txt_url(index: int, url: str, elapsed_seconds: int, video2txt_f
         f.write(f"{index} {url} {elapsed_seconds}\n")
 
 
+def record_skip_url(index: int, url: str, skip_file: Path):
+    """Record skipped URL to file with index number."""
+    with open(skip_file, 'a', encoding='utf-8') as f:
+        f.write(f"{index} {url}\n")
+
+
 def record_success_url(index: int, url: str, elapsed_seconds: int, ok_file: Path):
     """Record successful URL to file with index number and elapsed time."""
     with open(ok_file, 'a', encoding='utf-8') as f:
@@ -262,10 +268,12 @@ def convert_to_traditional(text: str) -> str:
 def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) -> tuple[bool, str]:
     """
     Download audio from YouTube, transcribe with whisper, save as text file.
+    Shows real-time progress during transcription.
     Returns (success, txt_file_path).
     """
     import tempfile
     import subprocess as sp
+    import re
 
     # Create transcripts directory if needed
     transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -274,7 +282,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
     safe_title = "".join(c if c.isalnum() or c in ' -_' else '_' for c in video_title)[:100]
     txt_file = transcripts_dir / f"{safe_title}.txt"
 
-    print(f"  WHISPER FALLBACK: Downloading audio...")
+    print(f"  WHISPER: Downloading audio...")
 
     # Download audio with yt-dlp
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -290,35 +298,61 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
         ], capture_output=True, text=True)
 
         if result.returncode != 0:
-            print(f"  WHISPER FALLBACK: Failed to download audio")
+            print(f"  WHISPER: Failed to download audio")
             return False, ""
 
         # Find the actual audio file (yt-dlp may add extension)
         audio_files = list(Path(tmpdir).glob("audio.*"))
         if not audio_files:
-            print(f"  WHISPER FALLBACK: No audio file found")
+            print(f"  WHISPER: No audio file found")
             return False, ""
         audio_file = audio_files[0]
 
-        print(f"  WHISPER FALLBACK: Transcribing with whisper...")
+        print(f"  WHISPER: Transcribing (this may take a while)...")
+        print(f"  ", end="", flush=True)
 
-        # Transcribe with whisper
-        result = sp.run([
-            "whisper",
-            str(audio_file),
-            "--language", "Chinese",
-            "--output_format", "txt",
-            "--output_dir", tmpdir
-        ], capture_output=True, text=True)
+        # Transcribe with whisper - stream output for progress
+        process = sp.Popen(
+            [
+                "whisper",
+                str(audio_file),
+                "--language", "Chinese",
+                "--output_format", "txt",
+                "--output_dir", tmpdir,
+                "--verbose", "True"
+            ],
+            stdout=sp.PIPE,
+            stderr=sp.STDOUT,
+            text=True,
+            bufsize=1
+        )
 
-        if result.returncode != 0:
-            print(f"  WHISPER FALLBACK: Transcription failed")
+        # Show progress as #####
+        progress_count = 0
+        last_percent = -1
+        for line in process.stdout:
+            # Look for percentage progress like [00:30.000 --> 00:35.000] or progress indicators
+            if '-->' in line or '%' in line:
+                progress_count += 1
+                if progress_count % 10 == 0:  # Print # every 10 segments
+                    print("#", end="", flush=True)
+            # Also look for timestamp patterns to show we're making progress
+            elif re.match(r'\[\d+:\d+', line):
+                progress_count += 1
+                if progress_count % 10 == 0:
+                    print("#", end="", flush=True)
+
+        process.wait()
+        print()  # Newline after progress
+
+        if process.returncode != 0:
+            print(f"  WHISPER: Transcription failed")
             return False, ""
 
         # Find the transcript file
         txt_files = list(Path(tmpdir).glob("*.txt"))
         if not txt_files:
-            print(f"  WHISPER FALLBACK: No transcript file found")
+            print(f"  WHISPER: No transcript file found")
             return False, ""
 
         # Read and convert to Traditional Chinese
@@ -331,7 +365,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
         with open(txt_file, 'w', encoding='utf-8') as f:
             f.write(traditional_transcript)
 
-        print(f"  WHISPER FALLBACK: Saved to {txt_file}")
+        print(f"  WHISPER: Saved to {txt_file}")
 
     return True, str(txt_file)
 
@@ -411,6 +445,11 @@ Examples:
         metavar="N",
         help="Max retry attempts before whisper fallback (default: 2)"
     )
+    parser.add_argument(
+        "--without-whisper",
+        action="store_true",
+        help="Disable whisper fallback (just skip failed videos)"
+    )
     return parser.parse_args()
 
 
@@ -422,11 +461,13 @@ def main():
     delay_seconds = args.interval
     resume_mode = args.resume
     max_retries = args.retry
+    use_whisper = not args.without_whisper
 
     # File paths (in current directory)
     index_file = Path("index.list")
     ok_file = Path("add_source_ok.txt")
     video2txt_file = Path("add_source_video2txt.txt")  # For whisper fallback successes
+    skip_file = Path("add_source_skip.txt")  # For skipped videos (when whisper disabled)
     transcripts_dir = Path("transcripts")  # For whisper transcripts
 
     # 1. Get playlist URL (from arg or index.list)
@@ -476,6 +517,7 @@ def main():
     print(f"Delay interval: {delay_seconds}s")
     print(f"Resume mode: {'ON' if resume_mode else 'OFF'}")
     print(f"Max retries: {max_retries}")
+    print(f"Whisper fallback: {'ON' if use_whisper else 'OFF'}")
 
     # 2b. Cleanup any existing error sources
     print(f"\nChecking for error sources to clean up...")
@@ -568,27 +610,34 @@ def main():
                     time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:
-                    # All retries exhausted - try whisper fallback
-                    print(f"  All {max_retries} retries exhausted. Trying whisper fallback...")
-                    video_title = get_video_title(video_url)
-                    traditional_title = convert_to_traditional(video_title)
-                    whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
-                    if whisper_ok:
-                        print(f"  Adding transcript as text source...")
-                        text_ok, text_source_id = add_text_source(txt_file, traditional_title)
-                        if text_ok:
-                            elapsed_seconds = int(time.time() - start_time)
-                            record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
-                            success_count += 1
-                            print(f"  SUCCESS (via whisper): Recorded to {video2txt_file}")
+                    # All retries exhausted
+                    print(f"  All {max_retries} retries exhausted.")
+                    if use_whisper:
+                        # Try whisper fallback
+                        print(f"  Trying whisper fallback...")
+                        video_title = get_video_title(video_url)
+                        traditional_title = convert_to_traditional(video_title)
+                        whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
+                        if whisper_ok:
+                            print(f"  Adding transcript as text source...")
+                            text_ok, text_source_id = add_text_source(txt_file, traditional_title)
+                            if text_ok:
+                                elapsed_seconds = int(time.time() - start_time)
+                                record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
+                                success_count += 1
+                                print(f"  SUCCESS (via whisper): Recorded to {video2txt_file}")
+                            else:
+                                print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
+                                print()
+                                sys.exit(1)
                         else:
-                            print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
+                            print(f"\n  FATAL [#{entry_idx}]: Whisper fallback failed!")
                             print()
                             sys.exit(1)
                     else:
-                        print(f"\n  FATAL [#{entry_idx}]: Whisper fallback failed!")
-                        print()
-                        sys.exit(1)
+                        # Whisper disabled - skip this video
+                        print(f"  SKIP [#{entry_idx}]: Whisper disabled, skipping...")
+                        record_skip_url(entry_idx, video_url, skip_file)
                     break  # Move to next URL
             print(f"OK (id: {source_id[:8]}...)")
             print(f"  Title: {title}")
@@ -617,26 +666,33 @@ def main():
                     time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:
-                    # All retries exhausted - try whisper fallback
-                    print(f"  All {max_retries} retries exhausted. Trying whisper fallback...")
-                    traditional_title = convert_to_traditional(title)
-                    whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
-                    if whisper_ok:
-                        print(f"  Adding transcript as text source...")
-                        text_ok, text_source_id = add_text_source(txt_file, traditional_title)
-                        if text_ok:
-                            elapsed_seconds = int(time.time() - start_time)
-                            record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
-                            success_count += 1
-                            print(f"  SUCCESS (via whisper): Recorded to {video2txt_file}")
+                    # All retries exhausted
+                    print(f"  All {max_retries} retries exhausted.")
+                    if use_whisper:
+                        # Try whisper fallback
+                        print(f"  Trying whisper fallback...")
+                        traditional_title = convert_to_traditional(title)
+                        whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
+                        if whisper_ok:
+                            print(f"  Adding transcript as text source...")
+                            text_ok, text_source_id = add_text_source(txt_file, traditional_title)
+                            if text_ok:
+                                elapsed_seconds = int(time.time() - start_time)
+                                record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
+                                success_count += 1
+                                print(f"  SUCCESS (via whisper): Recorded to {video2txt_file}")
+                            else:
+                                print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
+                                print()
+                                sys.exit(1)
                         else:
-                            print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
+                            print(f"\n  FATAL [#{entry_idx}]: Whisper fallback failed!")
                             print()
                             sys.exit(1)
                     else:
-                        print(f"\n  FATAL [#{entry_idx}]: Whisper fallback failed!")
-                        print()
-                        sys.exit(1)
+                        # Whisper disabled - skip this video
+                        print(f"  SKIP [#{entry_idx}]: Whisper disabled, skipping...")
+                        record_skip_url(entry_idx, video_url, skip_file)
                     break  # Move to next URL
             print(f"OK (status: {status})")
 
@@ -671,8 +727,12 @@ def main():
             time.sleep(delay_seconds)
 
     # 8. Summary
-    # Reload video2txt count (may have been updated during this run)
+    # Reload counts (may have been updated during this run)
     final_video2txt_urls = load_video2txt_urls(video2txt_file)
+    skip_count = 0
+    if skip_file.exists():
+        with open(skip_file, 'r') as f:
+            skip_count = sum(1 for line in f if line.strip())
 
     print("\n" + "=" * 50)
     print("SUMMARY")
@@ -680,12 +740,16 @@ def main():
     print(f"Total in playlist: {len(video_entries)}")
     print(f"Previously done:   {len(all_completed)}")
     print(f"Newly succeeded:   {success_count}")
+    if skip_count > 0:
+        print(f"Skipped:           {skip_count}")
 
     print(f"\nFiles:")
     print(f"  Playlist:   {index_file.absolute()}")
     print(f"  Direct OK:  {ok_file.absolute()}")
     if final_video2txt_urls:
         print(f"  Video2txt:  {video2txt_file.absolute()} ({len(final_video2txt_urls)} entries)")
+    if skip_count > 0:
+        print(f"  Skipped:    {skip_file.absolute()} ({skip_count} entries)")
     if transcripts_dir.exists():
         print(f"  Transcripts: {transcripts_dir.absolute()}/")
 

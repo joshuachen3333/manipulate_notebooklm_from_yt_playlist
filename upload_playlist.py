@@ -267,101 +267,106 @@ def convert_to_traditional(text: str) -> str:
 
 def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) -> tuple[bool, str]:
     """
-    Download audio from YouTube, transcribe with whisper, save as text file.
+    Download audio from YouTube, transcribe with whisper, save both mp3 and txt.
     Shows real-time progress during transcription.
     Returns (success, txt_file_path).
     """
-    import tempfile
     import subprocess as sp
     import re
+    import shutil
 
     # Create transcripts directory if needed
     transcripts_dir.mkdir(parents=True, exist_ok=True)
 
     # Clean title for filename
     safe_title = "".join(c if c.isalnum() or c in ' -_' else '_' for c in video_title)[:100]
+    mp3_file = transcripts_dir / f"{safe_title}.mp3"
     txt_file = transcripts_dir / f"{safe_title}.txt"
 
-    print(f"  WHISPER: Downloading audio...")
+    print(f"  WHISPER: Downloading audio to {mp3_file.name}...")
 
-    # Download audio with yt-dlp
-    with tempfile.TemporaryDirectory() as tmpdir:
-        audio_file = Path(tmpdir) / "audio.mp3"
+    # Download audio directly to transcripts folder
+    result = sp.run([
+        "yt-dlp",
+        "-x",  # Extract audio
+        "--audio-format", "mp3",
+        "-o", str(mp3_file),
+        video_url
+    ], capture_output=True, text=True)
 
-        # Download audio only
-        result = sp.run([
-            "yt-dlp",
-            "-x",  # Extract audio
-            "--audio-format", "mp3",
-            "-o", str(audio_file),
-            video_url
-        ], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  WHISPER: Failed to download audio")
+        return False, ""
 
-        if result.returncode != 0:
-            print(f"  WHISPER: Failed to download audio")
-            return False, ""
+    # Find the actual audio file (yt-dlp may add extension)
+    audio_files = list(transcripts_dir.glob(f"{safe_title}.*"))
+    audio_files = [f for f in audio_files if f.suffix in ['.mp3', '.m4a', '.webm', '.opus']]
+    if not audio_files:
+        print(f"  WHISPER: No audio file found")
+        return False, ""
+    actual_mp3 = audio_files[0]
 
-        # Find the actual audio file (yt-dlp may add extension)
-        audio_files = list(Path(tmpdir).glob("audio.*"))
-        if not audio_files:
-            print(f"  WHISPER: No audio file found")
-            return False, ""
-        audio_file = audio_files[0]
+    # Rename to .mp3 if different extension
+    if actual_mp3.suffix != '.mp3':
+        new_mp3 = actual_mp3.with_suffix('.mp3')
+        shutil.move(str(actual_mp3), str(new_mp3))
+        actual_mp3 = new_mp3
 
-        print(f"  WHISPER: Transcribing (this may take a while)...")
+    print(f"  WHISPER: Transcribing {actual_mp3.name}...")
 
-        # Transcribe with whisper - stream output for progress
-        process = sp.Popen(
-            [
-                "whisper",
-                str(audio_file),
-                "--language", "Chinese",
-                "--output_format", "txt",
-                "--output_dir", tmpdir,
-                "--verbose", "True"
-            ],
-            stdout=sp.PIPE,
-            stderr=sp.STDOUT,
-            text=True,
-            bufsize=1
-        )
+    # Transcribe with whisper - stream output for progress
+    process = sp.Popen(
+        [
+            "whisper",
+            str(actual_mp3),
+            "--language", "Chinese",
+            "--output_format", "txt",
+            "--output_dir", str(transcripts_dir),
+            "--verbose", "True"
+        ],
+        stdout=sp.PIPE,
+        stderr=sp.STDOUT,
+        text=True,
+        bufsize=1
+    )
 
-        # Show real-time transcription output
-        for line in process.stdout:
-            line = line.rstrip()
-            if line:
-                # Show timestamp lines with transcribed text
-                if '-->' in line or re.match(r'\[\d+:\d+', line):
-                    print(f"  {line}", flush=True)
-                # Show other progress info (like model loading, etc.)
-                elif any(kw in line.lower() for kw in ['detecting', 'loading', 'transcribing', '%']):
-                    print(f"  {line}", flush=True)
+    # Show real-time transcription output
+    for line in process.stdout:
+        line = line.rstrip()
+        if line:
+            # Show timestamp lines with transcribed text
+            if '-->' in line or re.match(r'\[\d+:\d+', line):
+                print(f"  {line}", flush=True)
+            # Show other progress info (like model loading, etc.)
+            elif any(kw in line.lower() for kw in ['detecting', 'loading', 'transcribing', '%']):
+                print(f"  {line}", flush=True)
 
-        process.wait()
+    process.wait()
 
-        if process.returncode != 0:
-            print(f"  WHISPER: Transcription failed")
-            return False, ""
+    if process.returncode != 0:
+        print(f"  WHISPER: Transcription failed")
+        return False, ""
 
-        # Find the transcript file
-        txt_files = list(Path(tmpdir).glob("*.txt"))
-        if not txt_files:
-            print(f"  WHISPER: No transcript file found")
-            return False, ""
+    # Whisper creates file with same name as audio but .txt extension
+    whisper_txt = actual_mp3.with_suffix('.txt')
+    if not whisper_txt.exists():
+        print(f"  WHISPER: No transcript file found")
+        return False, ""
 
-        # Read and convert to Traditional Chinese
-        with open(txt_files[0], 'r', encoding='utf-8') as f:
-            transcript = f.read()
+    # Read and convert to Traditional Chinese
+    with open(whisper_txt, 'r', encoding='utf-8') as f:
+        transcript = f.read()
 
-        traditional_transcript = convert_to_traditional(transcript)
+    traditional_transcript = convert_to_traditional(transcript)
 
-        # Save with video title
-        with open(txt_file, 'w', encoding='utf-8') as f:
-            f.write(traditional_transcript)
+    # Overwrite with Traditional Chinese version
+    with open(whisper_txt, 'w', encoding='utf-8') as f:
+        f.write(traditional_transcript)
 
-        print(f"  WHISPER: Saved to {txt_file}")
+    print(f"  WHISPER: Saved mp3: {actual_mp3}")
+    print(f"  WHISPER: Saved txt: {whisper_txt}")
 
-    return True, str(txt_file)
+    return True, str(whisper_txt)
 
 
 def get_video_title(video_url: str) -> str:

@@ -508,9 +508,8 @@ def main():
             success_count += 1
             print(f"  SUCCESS: Recorded to {ok_file} (elapsed: {elapsed_seconds}s)")
 
-            # If stubborn mode and had retries, remove from failed file (if it was there)
-            if stubborn_mode and retry_count > 0:
-                remove_from_failed_file(entry_idx, failed_file)
+            # Remove from failed file if it was there (from previous run)
+            remove_from_failed_file(entry_idx, failed_file)
 
             # Success - exit retry loop
             break

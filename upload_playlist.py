@@ -257,6 +257,118 @@ def convert_to_traditional(text: str) -> str:
     return converter.convert(text)
 
 
+def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) -> tuple[bool, str]:
+    """
+    Download audio from YouTube, transcribe with whisper, save as text file.
+    Returns (success, txt_file_path).
+    """
+    import tempfile
+    import subprocess as sp
+
+    # Create transcripts directory if needed
+    transcripts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clean title for filename
+    safe_title = "".join(c if c.isalnum() or c in ' -_' else '_' for c in video_title)[:100]
+    txt_file = transcripts_dir / f"{safe_title}.txt"
+
+    print(f"  WHISPER FALLBACK: Downloading audio...")
+
+    # Download audio with yt-dlp
+    with tempfile.TemporaryDirectory() as tmpdir:
+        audio_file = Path(tmpdir) / "audio.mp3"
+
+        # Download audio only
+        result = sp.run([
+            "yt-dlp",
+            "-x",  # Extract audio
+            "--audio-format", "mp3",
+            "-o", str(audio_file),
+            video_url
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print(f"  WHISPER FALLBACK: Failed to download audio")
+            return False, ""
+
+        # Find the actual audio file (yt-dlp may add extension)
+        audio_files = list(Path(tmpdir).glob("audio.*"))
+        if not audio_files:
+            print(f"  WHISPER FALLBACK: No audio file found")
+            return False, ""
+        audio_file = audio_files[0]
+
+        print(f"  WHISPER FALLBACK: Transcribing with whisper...")
+
+        # Transcribe with whisper
+        result = sp.run([
+            "whisper",
+            str(audio_file),
+            "--language", "Chinese",
+            "--output_format", "txt",
+            "--output_dir", tmpdir
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print(f"  WHISPER FALLBACK: Transcription failed")
+            return False, ""
+
+        # Find the transcript file
+        txt_files = list(Path(tmpdir).glob("*.txt"))
+        if not txt_files:
+            print(f"  WHISPER FALLBACK: No transcript file found")
+            return False, ""
+
+        # Read and convert to Traditional Chinese
+        with open(txt_files[0], 'r', encoding='utf-8') as f:
+            transcript = f.read()
+
+        traditional_transcript = convert_to_traditional(transcript)
+
+        # Save with video title
+        with open(txt_file, 'w', encoding='utf-8') as f:
+            f.write(traditional_transcript)
+
+        print(f"  WHISPER FALLBACK: Saved to {txt_file}")
+
+    return True, str(txt_file)
+
+
+def get_video_title(video_url: str) -> str:
+    """Get video title using yt-dlp."""
+    success, output = run_command([
+        "yt-dlp",
+        "--print", "title",
+        "--no-download",
+        video_url
+    ])
+    if success and output:
+        return output.strip()
+    return f"Video"
+
+
+def add_text_source(txt_file: str, title: str) -> tuple[bool, str]:
+    """Add a text file as source to NotebookLM. Returns (success, source_id)."""
+    success, output = run_command(
+        ["notebooklm", "source", "add", "--json", "--type", "text", "--title", title, txt_file],
+        capture_json=True
+    )
+
+    if not success:
+        return False, str(output)
+
+    if output.get("error"):
+        return False, output.get("message", "Unknown error")
+
+    source = output.get("source", {})
+    source_id = source.get("id", "") or output.get("source_id", "")
+
+    if not source_id:
+        return False, f"No source_id in response"
+
+    return True, source_id
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -269,8 +381,7 @@ Examples:
   python3 upload_playlist.py -i 25 "https://..."      # 25 second interval
   python3 upload_playlist.py -r                       # Resume (URL from index.list)
   python3 upload_playlist.py -r "https://..."         # Resume with explicit URL
-  python3 upload_playlist.py -s "https://..."         # Stubborn: retry until success
-  python3 upload_playlist.py -r -s                    # Resume + stubborn mode
+  python3 upload_playlist.py --retry 3 "https://..."  # Max 3 retries before whisper
         """
     )
     parser.add_argument(
@@ -292,9 +403,11 @@ Examples:
         help="Resume from last successful URL in index.list, also retry failed URLs"
     )
     parser.add_argument(
-        "-s", "--stubborn",
-        action="store_true",
-        help="Stubborn mode: retry failed URLs until success (頑固模式)"
+        "--retry",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Max retry attempts before whisper fallback (default: 2)"
     )
     return parser.parse_args()
 
@@ -306,12 +419,13 @@ def main():
     url = args.url
     delay_seconds = args.interval
     resume_mode = args.resume
-    stubborn_mode = args.stubborn
+    max_retries = args.retry
 
     # File paths (in current directory)
     index_file = Path("index.list")
     ok_file = Path("add_source_ok.txt")
     failed_file = Path("add_source_failed.txt")
+    transcripts_dir = Path("transcripts")  # For whisper fallback
 
     # 1. Get playlist URL (from arg or index.list)
     if url is None:
@@ -359,7 +473,7 @@ def main():
     print(f"Target notebook: {notebook_title} ({notebook_id[:8]}...)")
     print(f"Delay interval: {delay_seconds}s")
     print(f"Resume mode: {'ON' if resume_mode else 'OFF'}")
-    print(f"Stubborn mode: {'ON' if stubborn_mode else 'OFF'}")
+    print(f"Max retries: {max_retries}")
 
     # 3. Get video URLs (from YouTube or index.list)
     # video_entries: list of (index, url) tuples
@@ -447,17 +561,35 @@ def main():
             ok, source_id, title = add_source(video_url)
             if not ok:
                 print(f"FAILED: {source_id}")
-                if stubborn_mode:
+                if retry_count < max_retries:
                     retry_count += 1
                     retry_delay = delay_seconds + (retry_count - 1)  # Incremental delay
-                    print(f"  STUBBORN [#{entry_idx}]: Retry #{retry_count}, waiting {retry_delay}s...")
+                    print(f"  RETRY [#{entry_idx}]: #{retry_count}/{max_retries}, waiting {retry_delay}s...")
                     time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:
-                    print(f"  WARNING: Failed to add source!")
-                    record_failed_url(entry_idx, video_url, failed_file)
-                    print(f"  WARNING: Recorded to {failed_file}")
-                    fail_count += 1
+                    # All retries exhausted - try whisper fallback
+                    print(f"  All {max_retries} retries exhausted. Trying whisper fallback...")
+                    video_title = get_video_title(video_url)
+                    traditional_title = convert_to_traditional(video_title)
+                    whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
+                    if whisper_ok:
+                        print(f"  Adding transcript as text source...")
+                        text_ok, text_source_id = add_text_source(txt_file, traditional_title)
+                        if text_ok:
+                            elapsed_seconds = int(time.time() - start_time)
+                            record_success_url(entry_idx, video_url, elapsed_seconds, ok_file)
+                            success_count += 1
+                            print(f"  SUCCESS (via whisper): Recorded to {ok_file}")
+                            remove_from_failed_file(entry_idx, failed_file)
+                        else:
+                            print(f"  WARNING: Add text source failed: {text_source_id}")
+                            record_failed_url(entry_idx, video_url, failed_file)
+                            fail_count += 1
+                    else:
+                        print(f"  WARNING: Whisper fallback also failed!")
+                        record_failed_url(entry_idx, video_url, failed_file)
+                        fail_count += 1
                     time.sleep(delay_seconds)
                     break  # Move to next URL
             print(f"OK (id: {source_id[:8]}...)")
@@ -474,16 +606,34 @@ def main():
                 else:
                     print(f"  WARNING: Could not delete source {source_id[:8]}...")
 
-                if stubborn_mode:
+                if retry_count < max_retries:
                     retry_count += 1
                     retry_delay = delay_seconds + (retry_count - 1)  # Incremental delay
-                    print(f"  STUBBORN [#{entry_idx}]: Retry #{retry_count}, waiting {retry_delay}s...")
+                    print(f"  RETRY [#{entry_idx}]: #{retry_count}/{max_retries}, waiting {retry_delay}s...")
                     time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:
-                    record_failed_url(entry_idx, video_url, failed_file)
-                    print(f"  WARNING: Recorded to {failed_file}")
-                    fail_count += 1
+                    # All retries exhausted - try whisper fallback
+                    print(f"  All {max_retries} retries exhausted. Trying whisper fallback...")
+                    traditional_title = convert_to_traditional(title)
+                    whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
+                    if whisper_ok:
+                        print(f"  Adding transcript as text source...")
+                        text_ok, text_source_id = add_text_source(txt_file, traditional_title)
+                        if text_ok:
+                            elapsed_seconds = int(time.time() - start_time)
+                            record_success_url(entry_idx, video_url, elapsed_seconds, ok_file)
+                            success_count += 1
+                            print(f"  SUCCESS (via whisper): Recorded to {ok_file}")
+                            remove_from_failed_file(entry_idx, failed_file)
+                        else:
+                            print(f"  WARNING: Add text source failed: {text_source_id}")
+                            record_failed_url(entry_idx, video_url, failed_file)
+                            fail_count += 1
+                    else:
+                        print(f"  WARNING: Whisper fallback also failed!")
+                        record_failed_url(entry_idx, video_url, failed_file)
+                        fail_count += 1
                     time.sleep(delay_seconds)
                     break  # Move to next URL
             print(f"OK (status: {status})")

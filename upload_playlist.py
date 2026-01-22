@@ -124,6 +124,33 @@ def delete_source(source_id: str) -> bool:
     return success
 
 
+def cleanup_error_sources() -> int:
+    """Delete all sources with error status. Returns count of deleted sources."""
+    success, output = run_command(
+        ["notebooklm", "source", "list", "--json"],
+        capture_json=True
+    )
+
+    if not success:
+        return 0
+
+    sources = output.get("sources", [])
+    deleted = 0
+
+    for s in sources:
+        if s.get("status") == "error":
+            source_id = s.get("id")
+            title = s.get("title", "unknown")[:40]
+            print(f"  Deleting error source: {title}... ", end="", flush=True)
+            if delete_source(source_id):
+                print("OK")
+                deleted += 1
+            else:
+                print("FAILED")
+
+    return deleted
+
+
 def wait_for_source_with_status(source_id: str) -> tuple[bool, str]:
     """Wait for source and check final status. Returns (success, status)."""
     # Wait for processing to complete
@@ -446,6 +473,14 @@ def main():
     print(f"Delay interval: {delay_seconds}s")
     print(f"Resume mode: {'ON' if resume_mode else 'OFF'}")
     print(f"Max retries: {max_retries}")
+
+    # 2b. Cleanup any existing error sources
+    print(f"\nChecking for error sources to clean up...")
+    deleted_count = cleanup_error_sources()
+    if deleted_count > 0:
+        print(f"Cleaned up {deleted_count} error source(s)")
+    else:
+        print("No error sources found")
 
     # 3. Get video URLs (from YouTube or index.list)
     # video_entries: list of (index, url) tuples

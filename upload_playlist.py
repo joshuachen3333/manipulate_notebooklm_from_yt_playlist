@@ -265,6 +265,11 @@ def convert_to_traditional(text: str) -> str:
     return converter.convert(text)
 
 
+def format_title_with_index(index: int, title: str) -> str:
+    """Format title with zero-padded index prefix like [001] 標題."""
+    return f"[{index:03d}] {title}"
+
+
 def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) -> tuple[bool, str]:
     """
     Download audio from YouTube, transcribe with whisper, save both mp3 and txt.
@@ -601,10 +606,11 @@ def main():
                         print(f"  Trying whisper fallback...")
                         video_title = get_video_title(video_url)
                         traditional_title = convert_to_traditional(video_title)
+                        indexed_title = format_title_with_index(entry_idx, traditional_title)
                         whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
                         if whisper_ok:
-                            print(f"  Adding transcript as text source...")
-                            text_ok, text_source_id = add_text_source(txt_file, traditional_title)
+                            print(f"  Adding transcript as text source: {indexed_title}")
+                            text_ok, text_source_id = add_text_source(txt_file, indexed_title)
                             if text_ok:
                                 elapsed_seconds = int(time.time() - start_time)
                                 record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
@@ -656,10 +662,11 @@ def main():
                         # Try whisper fallback
                         print(f"  Trying whisper fallback...")
                         traditional_title = convert_to_traditional(title)
+                        indexed_title = format_title_with_index(entry_idx, traditional_title)
                         whisper_ok, txt_file = whisper_fallback(video_url, traditional_title, transcripts_dir)
                         if whisper_ok:
-                            print(f"  Adding transcript as text source...")
-                            text_ok, text_source_id = add_text_source(txt_file, traditional_title)
+                            print(f"  Adding transcript as text source: {indexed_title}")
+                            text_ok, text_source_id = add_text_source(txt_file, indexed_title)
                             if text_ok:
                                 elapsed_seconds = int(time.time() - start_time)
                                 record_video2txt_url(entry_idx, video_url, elapsed_seconds, video2txt_file)
@@ -680,19 +687,18 @@ def main():
                     break  # Move to next URL
             print(f"OK (status: {status})")
 
-            # Convert to Traditional Chinese
+            # Convert to Traditional Chinese and add index prefix
             traditional_title = convert_to_traditional(title)
-            if traditional_title != title:
-                print(f"  Converting: {title} → {traditional_title}")
+            indexed_title = format_title_with_index(entry_idx, traditional_title)
+            print(f"  Renaming: {title}")
+            print(f"        → {indexed_title}")
 
-                # Rename source
-                print("  Renaming...", end=" ", flush=True)
-                if rename_source(source_id, traditional_title):
-                    print("OK")
-                else:
-                    print("FAILED (source still added)")
+            # Rename source with indexed title
+            print("  Renaming...", end=" ", flush=True)
+            if rename_source(source_id, indexed_title):
+                print("OK")
             else:
-                print("  No conversion needed (already Traditional or no Chinese)")
+                print("FAILED (source still added)")
 
             # Calculate elapsed time
             elapsed_seconds = int(time.time() - start_time)

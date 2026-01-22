@@ -322,7 +322,8 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
             "--language", "Chinese",
             "--output_format", "txt",
             "--output_dir", str(transcripts_dir),
-            "--verbose", "True"
+            "--verbose", "True",
+            "--initial_prompt", "繁體中文"
         ]
     )  # No capture - output goes directly to terminal
 

@@ -450,7 +450,7 @@ def main():
                 if stubborn_mode:
                     retry_count += 1
                     retry_delay = delay_seconds + (retry_count - 1)  # Incremental delay
-                    print(f"  STUBBORN: Retry #{retry_count}, waiting {retry_delay}s...")
+                    print(f"  STUBBORN [#{entry_idx}]: Retry #{retry_count}, waiting {retry_delay}s...")
                     time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:
@@ -477,7 +477,7 @@ def main():
                 if stubborn_mode:
                     retry_count += 1
                     retry_delay = delay_seconds + (retry_count - 1)  # Incremental delay
-                    print(f"  STUBBORN: Retry #{retry_count}, waiting {retry_delay}s...")
+                    print(f"  STUBBORN [#{entry_idx}]: Retry #{retry_count}, waiting {retry_delay}s...")
                     time.sleep(retry_delay)
                     continue  # Retry the same URL
                 else:

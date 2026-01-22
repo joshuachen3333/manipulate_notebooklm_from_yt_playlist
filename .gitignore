@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+add_source_ok.txt
+add_source_failed.txt
+index.list

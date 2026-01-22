@@ -129,23 +129,28 @@ def wait_for_source_with_status(source_id: str) -> tuple[bool, str]:
     # Wait for processing to complete
     run_command(["notebooklm", "source", "wait", source_id])
 
-    # Check the final status
+    # Check the final status via source list --json
     success, output = run_command(
-        ["notebooklm", "source", "get", source_id],
-        capture_json=False
+        ["notebooklm", "source", "list", "--json"],
+        capture_json=True
     )
 
     if not success:
         return False, "unknown"
 
-    # Parse status from text output (look for "error" or "ready")
-    output_lower = output.lower()
-    if "│ error" in output_lower or "status: error" in output_lower:
-        return False, "error"
-    elif "│ ready" in output_lower or "status: ready" in output_lower:
-        return True, "ready"
+    # Find this source in the list
+    sources = output.get("sources", [])
+    for s in sources:
+        if s.get("id") == source_id:
+            status = s.get("status", "unknown")
+            if status == "error":
+                return False, "error"
+            elif status == "ready":
+                return True, "ready"
+            else:
+                return False, status
 
-    return True, "unknown"
+    return False, "not_found"
 
 
 def record_failed_url(url: str, reason: str, failed_file: Path):

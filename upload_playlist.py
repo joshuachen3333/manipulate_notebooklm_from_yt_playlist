@@ -309,7 +309,6 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
         audio_file = audio_files[0]
 
         print(f"  WHISPER: Transcribing (this may take a while)...")
-        print(f"  ", end="", flush=True)
 
         # Transcribe with whisper - stream output for progress
         process = sp.Popen(
@@ -327,23 +326,18 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
             bufsize=1
         )
 
-        # Show progress as #####
-        progress_count = 0
-        last_percent = -1
+        # Show real-time transcription output
         for line in process.stdout:
-            # Look for percentage progress like [00:30.000 --> 00:35.000] or progress indicators
-            if '-->' in line or '%' in line:
-                progress_count += 1
-                if progress_count % 10 == 0:  # Print # every 10 segments
-                    print("#", end="", flush=True)
-            # Also look for timestamp patterns to show we're making progress
-            elif re.match(r'\[\d+:\d+', line):
-                progress_count += 1
-                if progress_count % 10 == 0:
-                    print("#", end="", flush=True)
+            line = line.rstrip()
+            if line:
+                # Show timestamp lines with transcribed text
+                if '-->' in line or re.match(r'\[\d+:\d+', line):
+                    print(f"  {line}", flush=True)
+                # Show other progress info (like model loading, etc.)
+                elif any(kw in line.lower() for kw in ['detecting', 'loading', 'transcribing', '%']):
+                    print(f"  {line}", flush=True)
 
         process.wait()
-        print()  # Newline after progress
 
         if process.returncode != 0:
             print(f"  WHISPER: Transcription failed")

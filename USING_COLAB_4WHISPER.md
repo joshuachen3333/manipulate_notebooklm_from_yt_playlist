@@ -84,7 +84,7 @@ while True:
         print(f"Done: {txt_filename}")
 ```
 
-**3. Local script changes (`upload_playlist.py`):**
+**3. Local script changes (`manipulate_bookmarklm_from_yt_playlist.py`):**
 ```python
 def whisper_via_gdrive(mp3_path: str, output_dir: Path) -> tuple[bool, str]:
     """Upload to Google Drive, wait for Colab to process, download result."""
@@ -176,8 +176,9 @@ def transcribe_url(audio_url: str) -> str:
 
 def transcribe_file(audio_file) -> str:
     """Transcribe uploaded audio file."""
+    # audio_file is already a filepath string when using type="filepath"
     result = model.transcribe(
-        audio_file.name,
+        audio_file,
         language="Chinese",
         initial_prompt="繁體中文"
     )
@@ -191,8 +192,8 @@ demo = gr.Interface(
     title="Whisper Transcription API"
 )
 
-# Launch with public URL (via ngrok)
-demo.launch(share=True)
+# Launch with public URL
+demo.launch(share=True, show_error=True)
 # This prints a URL like: https://xxxxx.gradio.live
 ```
 

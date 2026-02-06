@@ -21,6 +21,7 @@ Usage:
 
 import sys
 import json
+import re
 import subprocess
 import time
 import argparse
@@ -319,14 +320,19 @@ def cleanup_stale_locks(lock_file: Path, max_age_hours: int = 4):
     return removed
 
 
-def write_index_list(video_entries: list[tuple[str, str]], playlist_url: str, index_file: Path):
+def write_index_list(video_entries: list, playlist_url: str, index_file: Path):
     """Write playlist URLs and titles to index.list file.
-    video_entries: list of (url, title) tuples."""
+    video_entries: list of (url, title) or (url, title, sort_date) tuples."""
     with open(index_file, 'w', encoding='utf-8') as f:
         # First line: playlist URL marker
         f.write(f"# playlist: {playlist_url}\n")
-        for i, (url, title) in enumerate(video_entries, 1):
-            f.write(f'{i}\t{url}\t"{title}"\n')
+        for i, entry in enumerate(video_entries, 1):
+            url, title = entry[0], entry[1]
+            date = entry[2] if len(entry) >= 3 and entry[2] else ""
+            if date:
+                f.write(f'{i}\t{url}\t"{title}"\t{date}\n')
+            else:
+                f.write(f'{i}\t{url}\t"{title}"\n')
 
 
 def read_playlist_url_from_index(index_file: Path) -> str | None:
@@ -382,6 +388,152 @@ def convert_to_traditional(text: str) -> str:
     """Convert Simplified Chinese to Traditional Chinese."""
     converter = opencc.OpenCC('s2t')
     return converter.convert(text)
+
+
+def extract_date_from_title(title: str) -> str | None:
+    """Extract a date from video title, returning normalized YYYYMMDD string.
+
+    Tries multiple common formats:
+      YYYYMMDD, YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD, YYYY年MM月DD日
+    Only matches years starting with 19 or 20.
+    Returns None if no date found.
+    """
+    # Pattern 1: YYYYMMDD (8 consecutive digits, not part of a longer number)
+    m = re.search(r'(?<!\d)((?:19|20)\d{6})(?!\d)', title)
+    if m:
+        return m.group(1)
+
+    # Pattern 2: YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
+    m = re.search(r'((?:19|20)\d{2})[-/.](\d{1,2})[-/.](\d{1,2})', title)
+    if m:
+        return f"{m.group(1)}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+
+    # Pattern 3: YYYY年MM月DD日
+    m = re.search(r'((?:19|20)\d{2})年(\d{1,2})月(\d{1,2})日', title)
+    if m:
+        return f"{m.group(1)}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+
+    return None
+
+
+def fetch_upload_timestamps(urls: list[str]) -> dict[str, str]:
+    """Fetch upload timestamps for videos that have no date in title.
+
+    Uses yt-dlp to get %(timestamp)s (unix epoch, second precision).
+    Falls back to %(upload_date)s if timestamp is NA.
+    Parallelized with 4 threads for speed.
+
+    Returns dict mapping url -> sort key string:
+      - "t:<epoch>" for timestamp (second precision)
+      - "d:<YYYYMMDD>" for upload_date only
+      - "" if both unavailable
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results = {}
+    total = len(urls)
+
+    def fetch_one(url: str) -> tuple[str, str]:
+        success, output = run_command([
+            "yt-dlp",
+            "--no-download",
+            "--print", "%(timestamp)s\t%(upload_date)s",
+            url
+        ])
+        if not success:
+            return url, ""
+        parts = output.strip().split('\t')
+        ts = parts[0] if len(parts) >= 1 else "NA"
+        upload_date = parts[1] if len(parts) >= 2 else "NA"
+        if ts and ts != "NA":
+            return url, f"t:{ts}"
+        if upload_date and upload_date != "NA":
+            return url, f"d:{upload_date}"
+        return url, ""
+
+    print(f"  Fetching upload timestamps for {total} video(s)...")
+    completed = 0
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(fetch_one, url): url for url in urls}
+        for future in as_completed(futures):
+            url, sort_key = future.result()
+            results[url] = sort_key
+            completed += 1
+            if completed % 10 == 0 or completed == total:
+                print(f"  Progress: {completed}/{total}", flush=True)
+
+    return results
+
+
+def sort_videos_by_date(
+    videos: list[tuple[str, str]], reverse: bool = False
+) -> list[tuple[str, str, str]]:
+    """Sort videos chronologically using 3-level fallback.
+
+    Fallback chain:
+    1. Extract date from title (instant, no network)
+    2. Fetch upload timestamp via yt-dlp (slow, only for videos missing title date)
+    3. Original playlist order (videos with no date at all)
+
+    Args:
+        videos: list of (url, title) tuples in original playlist order
+        reverse: if True, sort newest first instead of oldest first
+
+    Returns:
+        list of (url, title, sort_key) tuples in sorted order.
+        sort_key is "YYYYMMDD", "t:<epoch>", "d:<YYYYMMDD>", or "".
+    """
+    # Phase 1: Try title extraction for all videos
+    entries = []  # (original_index, url, title, sort_key)
+    needs_fetch = []
+
+    for orig_idx, (url, title) in enumerate(videos):
+        date = extract_date_from_title(title)
+        if date:
+            entries.append((orig_idx, url, title, date))
+        else:
+            entries.append((orig_idx, url, title, ""))
+            needs_fetch.append(url)
+
+    title_dated = len(videos) - len(needs_fetch)
+    print(f"  Dates from titles: {title_dated}/{len(videos)}")
+
+    # Phase 2: Fetch upload timestamps for videos without title dates
+    if needs_fetch:
+        print(f"  {len(needs_fetch)} video(s) need upload timestamp fetch...")
+        ts_map = fetch_upload_timestamps(needs_fetch)
+        entries = [
+            (oi, url, title, sk if sk else ts_map.get(url, ""))
+            for oi, url, title, sk in entries
+        ]
+        fetched = sum(1 for u in needs_fetch if ts_map.get(u))
+        still_missing = len(needs_fetch) - fetched
+        if still_missing > 0:
+            print(f"  Still missing dates for {still_missing} video(s) (will use original order)")
+    else:
+        print(f"  All videos have dates from titles")
+
+    # Phase 3: Stable sort
+    # Sort key: (priority, comparable_key, original_index)
+    #   priority 0 = has date/timestamp, 1 = no date
+    #   For "YYYYMMDD" title dates: key is the date string
+    #   For "t:<epoch>" timestamps: key is zero-padded epoch for string comparison
+    #   For "d:<YYYYMMDD>" upload dates: key is the date string
+    def sort_key(entry):
+        orig_idx, url, title, sk = entry
+        if not sk:
+            return (1, "", orig_idx)
+        if sk.startswith("t:"):
+            # Timestamp: zero-pad to 20 digits for string comparison
+            return (0, f"t:{int(sk[2:]):020d}", orig_idx)
+        if sk.startswith("d:"):
+            return (0, f"d:{sk[2:]}", orig_idx)
+        # Plain YYYYMMDD from title
+        return (0, sk, orig_idx)
+
+    entries.sort(key=sort_key, reverse=reverse)
+
+    return [(url, title, sk) for _, url, title, sk in entries]
 
 
 def format_title_with_index(index: int, title: str) -> str:
@@ -1550,6 +1702,16 @@ Examples:
         help="Timeout for Colab API requests in seconds (default: 0 = no timeout, status checked every 5s)"
     )
     parser.add_argument(
+        "--sort-by-original-list-order",
+        action="store_true",
+        help="Keep original YouTube playlist order instead of sorting by date (default: sort by date)"
+    )
+    parser.add_argument(
+        "--reverse-order",
+        action="store_true",
+        help="Sort newest first instead of oldest first"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output"
@@ -1588,6 +1750,8 @@ def main():
     start_from = args.start_from
     skip_indices = parse_skip_indices(args.skip)
     remote_sshfs = parse_remote_sshfs(args.remote_sshfs)
+    sort_by_date = not args.sort_by_original_list_order  # Default: sort by date
+    reverse_order = args.reverse_order
 
     # File paths (in current directory)
     index_file = Path("index.list")
@@ -1660,6 +1824,11 @@ def main():
         print(f"Remote SSHFS: {ssh_user}@{ssh_host}:{remote_path}")
     if colab_url or remote_sshfs:
         print(f"Local fallback: {'ON' if local_fallback else 'OFF'}")
+    if sort_by_date:
+        direction = "newest first" if reverse_order else "oldest first"
+        print(f"Sort by date: ON ({direction})")
+    else:
+        print(f"Sort by date: OFF (original playlist order)")
 
     # 2a. Mount SSHFS if configured (try SSHFS first, fall back to SSH if mount fails)
     if remote_sshfs:
@@ -1721,13 +1890,20 @@ def main():
 
         print(f"Found {len(video_data)} videos")
 
+        # Sort by date (default) or keep original order
+        if sort_by_date:
+            print(f"\nSorting by date ({'newest first' if reverse_order else 'oldest first'})...")
+            sorted_data = sort_videos_by_date(video_data, reverse=reverse_order)
+        else:
+            sorted_data = [(url, title, "") for url, title in video_data]
+
         # Build entries with index
-        for i, (video_url, title) in enumerate(video_data, 1):
+        for i, (video_url, title, _sort_key) in enumerate(sorted_data, 1):
             video_entries.append((i, video_url, title))
             url_to_index[video_url] = i
 
         # Write to index.list (with playlist URL on first line)
-        write_index_list(video_data, playlist_url, index_file)
+        write_index_list(sorted_data, playlist_url, index_file)
         print(f"Written to {index_file}")
 
     # 4. Load completed URLs from ok file and video2txt file

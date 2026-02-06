@@ -11,8 +11,14 @@ Batch upload YouTube playlist videos to Google NotebookLM with automatic Simplif
 ### Usage
 
 ```bash
-# Fresh upload
+# Fresh upload (sorted by date, oldest first — default)
 python3 manipulate_bookmarklm_from_yt_playlist.py "https://youtube.com/playlist?list=PLxxx"
+
+# Keep original YouTube playlist order (no date sorting)
+python3 manipulate_bookmarklm_from_yt_playlist.py --sort-by-original-list-order "https://..."
+
+# Sort newest first instead of oldest first
+python3 manipulate_bookmarklm_from_yt_playlist.py --reverse-order "https://..."
 
 # Resume from where you left off
 python3 manipulate_bookmarklm_from_yt_playlist.py -r
@@ -79,6 +85,7 @@ python3 manipulate_bookmarklm_from_yt_playlist.py -r --colab-url https://xxxxx.g
 2. Check notebook selected (`notebooklm status`)
 3. Cleanup error sources from NotebookLM
 4. Load video URLs (from YouTube or index.list if -r)
+4b. Sort by date (default): title date → upload timestamp → original order
 5. Load completed URLs from add_source_ok.txt and add_source_video2txt.txt
 6. For each pending video:
    a) Try `notebooklm source add <url>`
@@ -165,14 +172,14 @@ Default remote path: `/genesis/tmp`
 
 ## File Formats
 
-**index.list:** (tab-separated)
+**index.list:** (tab-separated, sorted by date by default)
 ```
 # playlist: https://youtube.com/playlist?list=PLxxx
-1	https://youtube.com/watch?v=aaa	影片標題一
-2	https://youtube.com/watch?v=bbb	影片標題二
+1	https://youtube.com/watch?v=aaa	影片標題一	20141226
+2	https://youtube.com/watch?v=bbb	影片標題二	20150102
 ...
 ```
-Format: `<index>\t<url>\t<title>` (title in Traditional Chinese)
+Format: `<index>\t<url>\t<title>\t<sort_date>` (title in Traditional Chinese, sort_date is optional)
 
 **add_source_ok.txt / add_source_video2txt.txt:**
 ```
@@ -195,6 +202,9 @@ Format: `<index> <url>`
 | `check_notebook_selected()` | Verify a notebook is selected in notebooklm |
 | `cleanup_error_sources()` | Delete all sources with status=error |
 | `get_playlist_videos(url)` | Extract video URLs and titles (正體中文) from playlist |
+| `extract_date_from_title(title)` | Extract YYYYMMDD date from title (multiple formats) |
+| `fetch_upload_timestamps(urls)` | Fetch upload timestamps via yt-dlp (parallel, 4 threads) |
+| `sort_videos_by_date(videos, reverse)` | Sort by date: title date → upload timestamp → original order |
 | `add_source(url)` | Add YouTube URL to NotebookLM |
 | `wait_for_source_with_status(id)` | Wait and check if source processed OK |
 | `convert_to_traditional(text)` | 簡體 → 正體中文 using opencc |

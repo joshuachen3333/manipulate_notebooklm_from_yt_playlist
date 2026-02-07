@@ -26,6 +26,7 @@ import subprocess
 import time
 import argparse
 from urllib.parse import urlparse, parse_qs
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import opencc
@@ -592,32 +593,30 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  WHISPER: Downloading audio to {mp3_file.name}..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
-            # Download audio directly to transcripts folder
-            result = sp.run([
-                "yt-dlp",
-                "--cookies-from-browser", "chrome",
-                "-x",  # Extract audio
-                "--audio-format", "mp3",
-                "-o", str(mp3_file),
-                video_url
-            ], capture_output=True, text=True)
+            # Download audio directly to transcripts folder (stream output for progress)
+            try:
+                result = sp.run([
+                    "yt-dlp",
+                    "--cookies-from-browser", "chrome",
+                    "-x",  # Extract audio
+                    "--audio-format", "mp3",
+                    "-o", str(mp3_file),
+                    video_url
+                ], timeout=600)  # 10 min timeout, output streams to terminal
+            except sp.TimeoutExpired:
+                print(f"  WHISPER: Download timed out (600s)")
+                if dl_attempt < max_download_retries:
+                    time.sleep(3)
+                    continue
+                return False, ""
 
             if result.returncode == 0:
                 break  # Download succeeded
             elif dl_attempt < max_download_retries:
                 print(f"  WHISPER: Download failed, retrying in 3s...")
-                if result.stderr:
-                    # Show last line of error for debugging
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  WHISPER: {err_lines[-1]}")
                 time.sleep(3)
             else:
                 print(f"  WHISPER: Failed to download audio after {max_download_retries} attempts")
-                if result.stderr:
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  WHISPER: {err_lines[-1]}")
                 return False, ""
 
         # Find the actual audio file (yt-dlp may add extension)
@@ -750,31 +749,30 @@ def whisper_via_colab(
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  COLAB: Downloading audio to {mp3_file.name}..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
-            # Download audio directly to transcripts folder
-            result = sp.run([
-                "yt-dlp",
-                "--cookies-from-browser", "chrome",
-                "-x",  # Extract audio
-                "--audio-format", "mp3",
-                "-o", str(mp3_file),
-                video_url
-            ], capture_output=True, text=True)
+            # Download audio directly to transcripts folder (stream output for progress)
+            try:
+                result = sp.run([
+                    "yt-dlp",
+                    "--cookies-from-browser", "chrome",
+                    "-x",  # Extract audio
+                    "--audio-format", "mp3",
+                    "-o", str(mp3_file),
+                    video_url
+                ], timeout=600)  # 10 min timeout, output streams to terminal
+            except sp.TimeoutExpired:
+                print(f"  COLAB: Download timed out (600s)")
+                if dl_attempt < max_download_retries:
+                    time.sleep(3)
+                    continue
+                return False, "Download timed out"
 
             if result.returncode == 0:
                 break  # Download succeeded
             elif dl_attempt < max_download_retries:
                 print(f"  COLAB: Download failed, retrying in 3s...")
-                if result.stderr:
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  COLAB: {err_lines[-1]}")
                 time.sleep(3)
             else:
                 print(f"  COLAB: Failed to download audio after {max_download_retries} attempts")
-                if result.stderr:
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  COLAB: {err_lines[-1]}")
                 return False, "Failed to download audio"
 
         # Find the actual audio file (yt-dlp may add extension)
@@ -1006,31 +1004,30 @@ def whisper_via_sshfs(
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  SSHFS: Downloading audio to remote {remote_mp3.name}..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
-            # Download audio directly to remote mount
-            result = sp.run([
-                "yt-dlp",
-                "--cookies-from-browser", "chrome",
-                "-x",  # Extract audio
-                "--audio-format", "mp3",
-                "-o", str(remote_mp3),
-                video_url
-            ], capture_output=True, text=True)
+            # Download audio directly to remote mount (stream output for progress)
+            try:
+                result = sp.run([
+                    "yt-dlp",
+                    "--cookies-from-browser", "chrome",
+                    "-x",  # Extract audio
+                    "--audio-format", "mp3",
+                    "-o", str(remote_mp3),
+                    video_url
+                ], timeout=600)  # 10 min timeout, output streams to terminal
+            except sp.TimeoutExpired:
+                print(f"  SSHFS: Download timed out (600s)")
+                if dl_attempt < max_download_retries:
+                    time.sleep(3)
+                    continue
+                return False, "Download timed out"
 
             if result.returncode == 0:
                 break  # Download succeeded
             elif dl_attempt < max_download_retries:
                 print(f"  SSHFS: Download failed, retrying in 3s...")
-                if result.stderr:
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  SSHFS: {err_lines[-1]}")
                 time.sleep(3)
             else:
                 print(f"  SSHFS: Failed to download audio after {max_download_retries} attempts")
-                if result.stderr:
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  SSHFS: {err_lines[-1]}")
                 return False, "Failed to download audio"
 
         # Find the actual audio file (yt-dlp may add extension)
@@ -1211,31 +1208,30 @@ def whisper_via_ssh(
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  SSH: Downloading audio locally..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
-            # Download with cookies from Chrome (works for age-restricted videos)
-            result = sp.run([
-                "yt-dlp",
-                "--cookies-from-browser", "chrome",
-                "-x",
-                "--audio-format", "mp3",
-                "-o", str(local_mp3),
-                video_url
-            ], capture_output=True, text=True)
+            # Download with cookies from Chrome (stream output for progress)
+            try:
+                result = sp.run([
+                    "yt-dlp",
+                    "--cookies-from-browser", "chrome",
+                    "-x",
+                    "--audio-format", "mp3",
+                    "-o", str(local_mp3),
+                    video_url
+                ], timeout=600)  # 10 min timeout, output streams to terminal
+            except sp.TimeoutExpired:
+                print(f"  SSH: Download timed out (600s)")
+                if dl_attempt < max_download_retries:
+                    time.sleep(3)
+                    continue
+                return False, "Download timed out"
 
             if result.returncode == 0:
                 break
             elif dl_attempt < max_download_retries:
                 print(f"  SSH: Download failed, retrying in 3s...")
-                if result.stderr:
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  SSH: {err_lines[-1]}")
                 time.sleep(3)
             else:
                 print(f"  SSH: Failed to download audio after {max_download_retries} attempts")
-                if result.stderr:
-                    err_lines = [l for l in result.stderr.strip().split('\n') if l.startswith('ERROR')]
-                    if err_lines:
-                        print(f"  SSH: {err_lines[-1]}")
                 return False, "Failed to download audio locally"
 
         # Find the actual audio file
@@ -1380,20 +1376,20 @@ def do_whisper_transcription(
         (success, txt_file_path or error_message)
     """
     last_error = "No whisper method available"
+    success, result = False, last_error
 
     # 1. Try Colab first (if configured)
-    if colab_url:
+    if not success and colab_url:
         success, result = whisper_via_colab(
             video_url, video_title, transcripts_dir,
             colab_url, colab_timeout
         )
-        if success:
-            return True, result
-        last_error = result
-        print(f"  COLAB failed: {result}")
+        if not success:
+            last_error = result
+            print(f"  COLAB failed: {result}")
 
     # 2. Try SSHFS remote (if configured and mounted)
-    if sshfs_config:
+    if not success and sshfs_config:
         mount_point, ssh_user, ssh_host, remote_path = sshfs_config
         if colab_url:
             print(f"  Falling back to SSHFS remote ({ssh_host})...")
@@ -1401,13 +1397,12 @@ def do_whisper_transcription(
             video_url, video_title, transcripts_dir,
             mount_point, ssh_user, ssh_host, remote_path
         )
-        if success:
-            return True, result
-        last_error = result
-        print(f"  SSHFS failed: {result}")
+        if not success:
+            last_error = result
+            print(f"  SSHFS failed: {result}")
 
     # 3. Try SSH remote (if configured - no mount needed)
-    if ssh_config:
+    if not success and ssh_config:
         ssh_user, ssh_host, remote_path = ssh_config
         if colab_url or sshfs_config:
             print(f"  Falling back to SSH remote ({ssh_host})...")
@@ -1415,18 +1410,29 @@ def do_whisper_transcription(
             video_url, video_title, transcripts_dir,
             ssh_user, ssh_host, remote_path
         )
-        if success:
-            return True, result
-        last_error = result
-        print(f"  SSH failed: {result}")
+        if not success:
+            last_error = result
+            print(f"  SSH failed: {result}")
 
     # 4. Try local whisper (if allowed)
-    if local_fallback:
+    if not success and local_fallback:
         if colab_url or sshfs_config or ssh_config:
             print(f"  Falling back to local whisper...")
-        return whisper_fallback(video_url, video_title, transcripts_dir)
+        success, result = whisper_fallback(video_url, video_title, transcripts_dir)
 
-    return False, last_error
+    if not success:
+        return False, last_error
+
+    # Prepend #URL to transcript for traceability (resume-safe)
+    txt_file = result
+    with open(txt_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if not content.startswith('#URL '):
+        with open(txt_file, 'w', encoding='utf-8') as f:
+            f.write(f'#URL {video_url}\n')
+            f.write(content)
+
+    return True, txt_file
 
 
 def get_video_title(video_url: str) -> str:
@@ -1443,9 +1449,15 @@ def get_video_title(video_url: str) -> str:
 
 
 def add_text_source(txt_file: str, title: str) -> tuple[bool, str]:
-    """Add a text file as source to NotebookLM. Returns (success, source_id)."""
+    """Add a text file as source to NotebookLM. Returns (success, source_id).
+
+    Note: Do NOT use --type text, as it treats the argument as inline text
+    instead of reading the file. Auto-detect reads .txt files correctly.
+    Title is set via rename after add, since auto-detect ignores --title.
+    """
+    # Add file (auto-detect reads .txt content)
     success, output = run_command(
-        ["notebooklm", "source", "add", "--json", "--type", "text", "--title", title, txt_file],
+        ["notebooklm", "source", "add", "--json", txt_file],
         capture_json=True
     )
 
@@ -1461,7 +1473,287 @@ def add_text_source(txt_file: str, title: str) -> tuple[bool, str]:
     if not source_id:
         return False, f"No source_id in response"
 
+    # Wait for source to finish processing before renaming
+    # (renaming during processing gets silently overwritten by NotebookLM)
+    if DEBUG:
+        print(f"  DEBUG add_text_source: waiting for source {source_id} to be ready...")
+    wait_ok, status = wait_for_source_with_status(source_id)
+    if DEBUG:
+        print(f"  DEBUG add_text_source: wait result: ok={wait_ok}, status={status}")
+    if not wait_ok:
+        return False, f"Source added (id={source_id}) but processing failed: {status}"
+
+    # Rename to correct title from index.list (auto-detect uses filename)
+    if DEBUG:
+        print(f"  DEBUG add_text_source: renaming {source_id} to: {title}")
+    if not rename_source(source_id, title):
+        return False, f"Source added (id={source_id}) but rename failed"
+
     return True, source_id
+
+
+def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dict
+) -> tuple[list[tuple], list[tuple]]:
+    """Match notebook sources to URLs by comparing titles against YouTube playlist.
+
+    Fetches playlist from YouTube (simplified Chinese titles), then matches each
+    notebook source title against them. Handles sources with or without [NNN] prefix,
+    and in simplified or traditional Chinese.
+
+    Returns (rename_plan, unmapped).
+    rename_plan: list of (source_id, old_label, new_idx, new_title, url)
+    """
+    # Fetch playlist in original form (simplified Chinese)
+    print(f"Fetching playlist titles from YouTube...")
+    success, output = run_command([
+        "yt-dlp", "--flat-playlist",
+        "--print", "%(url)s\t%(title)s",
+        playlist_url
+    ])
+    if not success:
+        print(f"Error: Failed to fetch playlist: {output}", file=sys.stderr)
+        sys.exit(1)
+
+    # Build simplified_title → url mapping
+    title_to_url = {}  # simplified_title -> url
+    for line in output.split('\n'):
+        line = line.strip()
+        if line:
+            parts = line.split('\t', 1)
+            if len(parts) == 2:
+                url, title = parts
+                title_to_url[title] = url
+    print(f"Playlist titles fetched: {len(title_to_url)}")
+
+    # Also build Traditional Chinese title → url for matching Traditional sources
+    traditional_to_url = {}
+    for title, url in title_to_url.items():
+        traditional_to_url[convert_to_traditional(title)] = url
+
+    # Strategy 0: Match text sources by #URL in fulltext (most reliable for whisper uploads)
+    url_from_fulltext = {}  # source_id -> url
+    text_source_count = 0
+    for s in sources:
+        source_id = s.get("id")
+        source_type = s.get("type", "")
+        # Text sources (whisper uploads) may have #URL as first line
+        if source_type == "text":
+            text_source_count += 1
+            success, fulltext = run_command(
+                ["notebooklm", "source", "fulltext", source_id])
+            if success and fulltext.startswith('#URL '):
+                first_line = fulltext.split('\n', 1)[0]
+                extracted_url = first_line[5:].strip()
+                if extracted_url in new_map:
+                    url_from_fulltext[source_id] = extracted_url
+    if text_source_count > 0:
+        print(f"Text sources: {text_source_count}, matched by #URL: {len(url_from_fulltext)}")
+
+    # Match each notebook source
+    rename_plan = []
+    unmapped = []
+    matched_urls = set()
+    converter_t2s = opencc.OpenCC('t2s')
+
+    for s in sources:
+        source_id = s.get("id")
+        source_title = s.get("title", "")
+
+        # Strategy 0: #URL fulltext match (highest priority)
+        url = url_from_fulltext.get(source_id)
+
+        if not url:
+            # Strip [NNN] prefix if present
+            stripped = re.sub(r'^\[\d+\]\s*', '', source_title)
+
+            # 1. Exact match (simplified)
+            if stripped in title_to_url:
+                url = title_to_url[stripped]
+            # 2. Exact match (traditional)
+            elif stripped in traditional_to_url:
+                url = traditional_to_url[stripped]
+            # 3. Convert source title to simplified and match
+            else:
+                simplified_stripped = converter_t2s.convert(stripped)
+                if simplified_stripped in title_to_url:
+                    url = title_to_url[simplified_stripped]
+                else:
+                    # 4. Match by date extracted from title
+                    source_date = extract_date_from_title(source_title)
+                    if source_date:
+                        candidates = [(t, u) for t, u in title_to_url.items()
+                                      if extract_date_from_title(t) == source_date
+                                      and u not in matched_urls]
+                        if len(candidates) == 1:
+                            url = candidates[0][1]
+                        elif len(candidates) > 1:
+                            # Multiple same-date: pick best title similarity
+                            best_ratio = 0
+                            best_url = None
+                            simplified_source = converter_t2s.convert(stripped)
+                            for cand_title, cand_url in candidates:
+                                ratio = SequenceMatcher(
+                                    None, simplified_source, cand_title
+                                ).ratio()
+                                if ratio > best_ratio:
+                                    best_ratio = ratio
+                                    best_url = cand_url
+                            if best_ratio > 0.4:
+                                url = best_url
+
+        if url and url not in matched_urls:
+            new_entry = new_map.get(url)
+            if new_entry:
+                new_idx, new_title = new_entry
+                old_label = source_title[:30] + "..." if len(source_title) > 30 else source_title
+                rename_plan.append((source_id, old_label, new_idx, new_title, url))
+                matched_urls.add(url)
+                continue
+
+        unmapped.append((source_id, source_title[:50]))
+
+    return rename_plan, unmapped
+
+
+def reindex_sources(playlist_url: str,
+                    index_file: Path, ok_file: Path, video2txt_file: Path):
+    """Rename notebook sources to match current index.list ordering.
+
+    Matches by title and #URL fulltext against YouTube playlist.
+    Extra sources not in the playlist are left untouched.
+    Shows dry-run plan and asks for confirmation before executing.
+    """
+    # 0. Notebook check
+    is_selected, notebook_id, notebook_title = check_notebook_selected()
+    if not is_selected:
+        print("Error: No notebook selected. Run: notebooklm use <notebook_id>", file=sys.stderr)
+        sys.exit(1)
+    print(f"Notebook: {notebook_title} ({notebook_id})")
+
+    # 1. Read new index.list → URL → (new_index, new_title)
+    if not index_file.exists():
+        print(f"Error: Current index.list not found: {index_file}", file=sys.stderr)
+        print("Run --list-only first to create a sorted index.list.", file=sys.stderr)
+        sys.exit(1)
+    new_map = {}  # url -> (new_index, new_title)
+    with open(index_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    new_idx = int(parts[0])
+                    url = parts[1]
+                    title = parts[2].strip('"') if len(parts) >= 3 else ""
+                    new_map[url] = (new_idx, title)
+    print(f"New index.list: {len(new_map)} entries")
+
+    # 2. Get notebook sources
+    success, output = run_command(
+        ["notebooklm", "source", "list", "--json"],
+        capture_json=True
+    )
+    if not success:
+        print(f"Error: Failed to list sources: {output}", file=sys.stderr)
+        sys.exit(1)
+    sources = output.get("sources", [])
+    print(f"Notebook sources: {len(sources)}")
+
+    # 3. Match sources to URLs
+    print(f"\nMatching by title (+ #URL fulltext)...")
+    rename_plan, unmapped = _match_sources_by_title(
+        sources, playlist_url, new_map
+    )
+
+    # Build source title lookup for skip-check
+    source_titles = {s["id"]: s.get("title", "") for s in sources}
+
+    # 4. Dry-run: show plan and ask for confirmation
+    # Sort rename plan by new_idx for readable display
+    rename_plan.sort(key=lambda x: x[2])
+
+    # Separate into needs-rename vs already-correct
+    to_rename = []
+    already_correct = []
+    for entry in rename_plan:
+        source_id, old_label, new_idx, new_title, url = entry
+        target_title = format_title_with_index(new_idx, new_title)
+        current_title = source_titles.get(source_id, "")
+        if current_title == target_title:
+            already_correct.append(entry)
+        else:
+            to_rename.append(entry)
+
+    print(f"\n{'='*60}")
+    print(f"REINDEX PLAN")
+    print(f"{'='*60}")
+    print(f"Matched: {len(rename_plan)}")
+    print(f"  Need rename: {len(to_rename)}")
+    print(f"  Already correct: {len(already_correct)}")
+    if unmapped:
+        print(f"Unmapped (left untouched): {len(unmapped)}")
+    remaining = len(new_map) - len(rename_plan)
+    if remaining > 0:
+        print(f"Not in notebook: {remaining}")
+
+    if to_rename:
+        print(f"\nRenames to execute:")
+        for source_id, old_label, new_idx, new_title, url in to_rename:
+            print(f"  {old_label} → [{new_idx:03d}] {new_title[:40]}")
+    if unmapped:
+        print(f"\nUnmapped sources (skipped):")
+        for sid, reason in unmapped:
+            print(f"  {reason}")
+    if already_correct:
+        print(f"\nAlready correct ({len(already_correct)}):")
+        for source_id, old_label, new_idx, new_title, url in already_correct[:3]:
+            print(f"  [{new_idx:03d}] {new_title[:40]}")
+        if len(already_correct) > 3:
+            print(f"  ... and {len(already_correct) - 3} more")
+    print(f"{'='*60}")
+
+    if not to_rename:
+        print("\nNothing to rename. All matched sources are already correct.")
+    else:
+        answer = input(f"\nProceed with renaming {len(to_rename)} sources? [y/N] ").strip().lower()
+        if answer != 'y':
+            print("Aborted.")
+            sys.exit(0)
+
+        # 5. Execute renames
+        renamed = 0
+        failed = 0
+        for source_id, old_label, new_idx, new_title, url in to_rename:
+            indexed_title = format_title_with_index(new_idx, new_title)
+            print(f"  {old_label} → [{new_idx:03d}] {new_title[:40]}... ", end="", flush=True)
+            if rename_source(source_id, indexed_title):
+                print("OK")
+                renamed += 1
+            else:
+                print("FAILED")
+                failed += 1
+
+        print(f"\nDone: {renamed} renamed, {failed} failed")
+
+    # 6. Sync tracking files — record all matched sources so -r skips them
+    # Determine source type: text sources (whisper) → video2txt, others → ok
+    source_types = {s["id"]: s.get("type", "") for s in sources}
+    ok_count = 0
+    v2t_count = 0
+    with open(ok_file, 'w', encoding='utf-8') as f_ok, \
+         open(video2txt_file, 'w', encoding='utf-8') as f_v2t:
+        for source_id, _, new_idx, _, url in rename_plan:
+            if source_types.get(source_id) == "text":
+                f_v2t.write(f"{new_idx} {url} 0\n")
+                v2t_count += 1
+            else:
+                f_ok.write(f"{new_idx} {url} 0\n")
+                ok_count += 1
+
+    print(f"Tracking files synced: {ok_file} ({ok_count}), {video2txt_file} ({v2t_count})")
+    remaining = len(new_map) - len(rename_plan)
+    if remaining > 0:
+        print(f"Remaining: {remaining} videos not yet in notebook (use -r to upload)")
 
 
 def parse_remote_sshfs(value: str | None) -> tuple[str, str, str] | None:
@@ -1702,6 +1994,18 @@ Examples:
         help="Timeout for Colab API requests in seconds (default: 0 = no timeout, status checked every 5s)"
     )
     parser.add_argument(
+        "--list-only",
+        action="store_true",
+        help="Only create index.list (with sorting), do not upload to NotebookLM"
+    )
+    parser.add_argument(
+        "--reindex", "--reorder",
+        action="store_true",
+        default=False,
+        dest="reindex",
+        help="Rename notebook sources to match current index.list ordering (by title/#URL matching)."
+    )
+    parser.add_argument(
         "--sort-by-original-list-order",
         action="store_true",
         help="Keep original YouTube playlist order instead of sorting by date (default: sort by date)"
@@ -1737,6 +2041,7 @@ def main():
         print(f"Using local config: {local_notebooklm.absolute()}")
 
     args = parse_args()
+
     url = args.url
     delay_seconds = args.interval
     resume_mode = args.resume
@@ -1752,6 +2057,7 @@ def main():
     remote_sshfs = parse_remote_sshfs(args.remote_sshfs)
     sort_by_date = not args.sort_by_original_list_order  # Default: sort by date
     reverse_order = args.reverse_order
+    list_only = args.list_only
 
     # File paths (in current directory)
     index_file = Path("index.list")
@@ -1763,6 +2069,17 @@ def main():
     sshfs_mount_point = transcripts_dir / "remote_sshfs"  # SSHFS mount point
     sshfs_config = None  # Will be set if --remote-sshfs is used and mount succeeds
     ssh_config = None  # Will be set if SSHFS mount fails (fallback to direct SSH)
+
+    # --reindex: rename existing sources to match current index.list, then exit
+    if args.reindex:
+        playlist_url_for_reindex = read_playlist_url_from_index(index_file)
+        if not playlist_url_for_reindex:
+            print("Error: Cannot read playlist URL from index.list", file=sys.stderr)
+            print("Run --list-only first to create a sorted index.list.", file=sys.stderr)
+            sys.exit(1)
+        reindex_sources(playlist_url_for_reindex,
+                        index_file, ok_file, video2txt_file)
+        sys.exit(0)
 
     # 1. Get playlist URL (from arg or index.list)
     if url is None:
@@ -1799,15 +2116,15 @@ def main():
     playlist_url = build_playlist_url(playlist_id)
     print(f"Playlist ID: {playlist_id}")
 
-    # 2. Check if notebook is selected
-    is_selected, notebook_id, notebook_title = check_notebook_selected()
-    if not is_selected:
-        print("Error: No notebook selected.", file=sys.stderr)
-        print("Run 'notebooklm use <notebook_id>' first.", file=sys.stderr)
-        print("Use 'notebooklm list' to see available notebooks.", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Target notebook: {notebook_title} ({notebook_id[:8]}...)")
+    # 2. Check if notebook is selected (skip for --list-only)
+    if not list_only:
+        is_selected, notebook_id, notebook_title = check_notebook_selected()
+        if not is_selected:
+            print("Error: No notebook selected.", file=sys.stderr)
+            print("Run 'notebooklm use <notebook_id>' first.", file=sys.stderr)
+            print("Use 'notebooklm list' to see available notebooks.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Target notebook: {notebook_title} ({notebook_id[:8]}...)")
     print(f"Delay interval: {delay_seconds}s")
     print(f"Resume mode: {'ON' if resume_mode else 'OFF'}")
     print(f"Max retries: {max_retries}")
@@ -1905,6 +2222,11 @@ def main():
         # Write to index.list (with playlist URL on first line)
         write_index_list(sorted_data, playlist_url, index_file)
         print(f"Written to {index_file}")
+
+    # --list-only: exit after creating index.list
+    if list_only:
+        print(f"\n--list-only: {len(video_entries)} videos written to {index_file}")
+        sys.exit(0)
 
     # 4. Load completed URLs from ok file and video2txt file
     completed_urls = load_ok_urls(ok_file)

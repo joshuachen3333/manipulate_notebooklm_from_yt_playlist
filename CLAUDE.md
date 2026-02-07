@@ -20,6 +20,16 @@ python3 manipulate_bookmarklm_from_yt_playlist.py --sort-by-original-list-order 
 # Sort newest first instead of oldest first
 python3 manipulate_bookmarklm_from_yt_playlist.py --reverse-order "https://..."
 
+# Only create index.list, don't upload (no notebook needed)
+python3 manipulate_bookmarklm_from_yt_playlist.py --list-only "https://..."
+
+# Reindex: rename notebook sources to match current sorted index.list
+# (matches by title against YouTube playlist)
+python3 manipulate_bookmarklm_from_yt_playlist.py --reindex
+
+# Reindex with old index.list for [NNN]-based matching (faster, more reliable)
+python3 manipulate_bookmarklm_from_yt_playlist.py --reindex /path/to/old/index.list
+
 # Resume from where you left off
 python3 manipulate_bookmarklm_from_yt_playlist.py -r
 
@@ -124,8 +134,9 @@ Use `--no-local-fallback` to exit instead of falling back to local whisper.
    - --initial_prompt 繁體中文
    - --verbose True (shows real-time progress)
 4. Convert transcript 簡體 → 正體中文 (opencc)
-5. Save to transcripts/<title>.txt
-6. Add as text source to NotebookLM
+5. Prepend `#URL <video_url>` as first line (traceability)
+6. Save to transcripts/<title>.txt
+7. Add as text source to NotebookLM
 ```
 
 ### SSHFS Remote Whisper
@@ -205,6 +216,7 @@ Format: `<index> <url>`
 | `extract_date_from_title(title)` | Extract YYYYMMDD date from title (multiple formats) |
 | `fetch_upload_timestamps(urls)` | Fetch upload timestamps via yt-dlp (parallel, 4 threads) |
 | `sort_videos_by_date(videos, reverse)` | Sort by date: title date → upload timestamp → original order |
+| `reindex_sources(old_index, ...)` | Rename notebook sources to match current sorted index.list |
 | `add_source(url)` | Add YouTube URL to NotebookLM |
 | `wait_for_source_with_status(id)` | Wait and check if source processed OK |
 | `convert_to_traditional(text)` | 簡體 → 正體中文 using opencc |
@@ -323,6 +335,18 @@ notebooklm source rename <source_id> "New Title"
 6. **Resume Mode (-r)**:
    - Can omit URL (reads from index.list)
    - Skips URLs in add_source_ok.txt and add_source_video2txt.txt
+
+7. **Never redo work on disk**: Before downloading or transcribing, always check `transcripts/` (in current working directory) for existing files:
+   - `.txt` exists → reuse directly (skip download + whisper)
+   - `.mp3` exists but no `.txt` → skip download, just whisper
+   - Neither exists → full download + whisper
+   - Applies to all flows: normal upload, resume, and `--reindex` (when re-adding text sources)
+
+8. **notebooklm source add**: Do NOT use `--type text` for file uploads — it treats the argument as inline text (stores the file path, not the content). Let auto-detect handle `.txt` files, then rename to set the correct title.
+
+9. **#URL traceability**: Whisper transcripts have `#URL <video_url>` as the first line for URL-based matching in `--reindex`/`--reorder`
+
+10. **`--reindex`/`--reorder` = rename only**: Never delete sources, never re-create. YouTube sources imported natively are precious (notebooklm-py `source add` for YouTube fails frequently). Only use `notebooklm source rename` to update titles.
 
 ## Troubleshooting
 

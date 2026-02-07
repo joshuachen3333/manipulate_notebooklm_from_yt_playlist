@@ -2109,8 +2109,16 @@ Examples:
     parser.add_argument(
         "--remote-sshfs",
         type=str,
+        nargs='?',
+        const="cschen@genesis",
+        default="cschen@genesis",
         metavar="USER@HOST[:PATH]",
-        help="Remote whisper via SSHFS (e.g., cschen@genesis or cschen@genesis:/custom/path, default path: /genesis/tmp)"
+        help="Remote whisper via SSHFS (default: cschen@genesis, use --no-remote-sshfs to disable)"
+    )
+    parser.add_argument(
+        "--no-remote-sshfs",
+        action="store_true",
+        help="Disable remote SSHFS whisper (use local whisper instead)"
     )
     parser.add_argument(
         "--colab-timeout",
@@ -2200,7 +2208,7 @@ def main():
     DEBUG = args.debug
     start_from = args.start_from
     skip_indices = parse_skip_indices(args.skip)
-    remote_sshfs = parse_remote_sshfs(args.remote_sshfs)
+    remote_sshfs = None if args.no_remote_sshfs else parse_remote_sshfs(args.remote_sshfs)
     sort_by_date = not args.sort_by_original_list_order  # Default: sort by date
     reverse_order = args.reverse_order
     list_only = args.list_only

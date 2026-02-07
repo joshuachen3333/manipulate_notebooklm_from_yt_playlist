@@ -2234,6 +2234,16 @@ def main():
     sshfs_config = None  # Will be set if --remote-sshfs is used and mount succeeds
     ssh_config = None  # Will be set if SSHFS mount fails (fallback to direct SSH)
 
+    # Show which notebook we're working with (skip for --list-only)
+    if not list_only:
+        is_selected, notebook_id, notebook_title = check_notebook_selected()
+        if not is_selected:
+            print("Error: No notebook selected.", file=sys.stderr)
+            print("Run 'notebooklm use <notebook_id>' first.", file=sys.stderr)
+            print("Use 'notebooklm list' to see available notebooks.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Notebook: {notebook_title} ({notebook_id[:8]}...)")
+
     # --reindex (standalone): rename existing sources to match current index.list, then exit
     if args.reindex and not args.auto:
         playlist_url_for_reindex = read_playlist_url_from_index(index_file)
@@ -2280,15 +2290,6 @@ def main():
     playlist_url = build_playlist_url(playlist_id)
     print(f"Playlist ID: {playlist_id}")
 
-    # 2. Check if notebook is selected (skip for --list-only)
-    if not list_only:
-        is_selected, notebook_id, notebook_title = check_notebook_selected()
-        if not is_selected:
-            print("Error: No notebook selected.", file=sys.stderr)
-            print("Run 'notebooklm use <notebook_id>' first.", file=sys.stderr)
-            print("Use 'notebooklm list' to see available notebooks.", file=sys.stderr)
-            sys.exit(1)
-        print(f"Target notebook: {notebook_title} ({notebook_id[:8]}...)")
     print(f"Delay interval: {delay_seconds}s")
     print(f"Resume mode: {'ON' if resume_mode else 'OFF'}")
     print(f"Max retries: {max_retries}")

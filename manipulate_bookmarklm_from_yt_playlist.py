@@ -36,6 +36,7 @@ import opencc
 # Constants
 DEFAULT_DELAY_SECONDS = 1
 DEBUG = False  # Set via --debug flag
+AUTO_YES = False  # Set via -y flag
 
 
 def extract_playlist_id(url: str) -> str | None:
@@ -1841,10 +1842,13 @@ def reindex_sources(playlist_url: str,
     if not to_rename:
         print("\nNothing to rename. All matched sources are already correct.")
     else:
-        answer = input(f"\nProceed with renaming {len(to_rename)} sources? [y/N] ").strip().lower()
-        if answer != 'y':
-            print("Aborted.")
-            sys.exit(0)
+        if AUTO_YES:
+            print(f"\nAuto-accepting rename of {len(to_rename)} sources (-y)")
+        else:
+            answer = input(f"\nProceed with renaming {len(to_rename)} sources? [y/N] ").strip().lower()
+            if answer != 'y':
+                print("Aborted.")
+                sys.exit(0)
 
         # 5. Execute renames
         renamed = 0
@@ -2160,6 +2164,11 @@ Examples:
         help="Full auto: create folder, find/create notebook, index, reindex, and upload"
     )
     parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Auto-accept all yes/no prompts"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output"
@@ -2204,8 +2213,9 @@ def main():
     colab_url = args.colab_url
     local_fallback = not args.no_local_fallback  # Default: True (fallback enabled)
     colab_timeout = args.colab_timeout
-    global DEBUG
+    global DEBUG, AUTO_YES
     DEBUG = args.debug
+    AUTO_YES = args.yes or args.auto
     start_from = args.start_from
     skip_indices = parse_skip_indices(args.skip)
     remote_sshfs = None if args.no_remote_sshfs else parse_remote_sshfs(args.remote_sshfs)

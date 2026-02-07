@@ -25,6 +25,8 @@ import re
 import subprocess
 import time
 import argparse
+import shutil
+import os
 from urllib.parse import urlparse, parse_qs
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -32,7 +34,7 @@ from pathlib import Path
 import opencc
 
 # Constants
-DEFAULT_DELAY_SECONDS = 20
+DEFAULT_DELAY_SECONDS = 1
 DEBUG = False  # Set via --debug flag
 
 
@@ -391,6 +393,126 @@ def convert_to_traditional(text: str) -> str:
     return converter.convert(text)
 
 
+def get_playlist_title(playlist_url: str) -> str:
+    """Get playlist title from YouTube using yt-dlp. Returns Traditional Chinese title."""
+    success, output = run_command([
+        "yt-dlp",
+        "--flat-playlist",
+        "--print", "%(playlist_title)s",
+        "--playlist-items", "1",
+        playlist_url
+    ])
+    if not success or not output.strip():
+        print(f"Error: Could not get playlist title: {output}", file=sys.stderr)
+        sys.exit(1)
+    title = output.strip().split('\n')[0].strip()
+    return convert_to_traditional(title)
+
+
+def sanitize_folder_name(title: str) -> str:
+    """Sanitize a title for use as a folder name.
+    Replaces spaces and shell-special chars with _, collapses consecutive _, strips trailing _."""
+    result = re.sub(r'[\s()\[\]{}|&;!$~<>\'"\\`]+', '_', title)
+    result = re.sub(r'_+', '_', result)
+    result = result.strip('_')
+    return result
+
+
+def find_or_create_notebook(playlist_title: str) -> str:
+    """Find an existing notebook matching playlist_title, or create a new one.
+    Returns notebook_id. Also runs 'notebooklm use <id>' to select it."""
+    success, output = run_command(["notebooklm", "list", "--json"], capture_json=True)
+    if not success:
+        print(f"Error: Cannot list notebooks: {output}", file=sys.stderr)
+        print("Try running 'notebooklm auth' to re-authenticate.", file=sys.stderr)
+        sys.exit(1)
+
+    notebooks = output.get("notebooks", [])
+    t2s = opencc.OpenCC('t2s')
+
+    def normalize(title: str) -> str:
+        for prefix in ["Joshua_", "Joshua ", "Joshua"]:
+            if title.startswith(prefix):
+                title = title[len(prefix):]
+                break
+        title = t2s.convert(title)
+        title = re.sub(r'[\s_《》\u3008\u3009\u300a\u300b\uff08\uff09()【】\[\]]+', '', title)
+        return title.lower()
+
+    target_normalized = normalize(playlist_title)
+
+    for nb in notebooks:
+        nb_title = nb.get("title", "")
+        if normalize(nb_title) == target_normalized:
+            nb_id = nb["id"]
+            print(f"  Found existing notebook: {nb_title}")
+            success, _ = run_command(["notebooklm", "use", nb_id])
+            if not success:
+                print(f"Error: Failed to select notebook {nb_id}", file=sys.stderr)
+                sys.exit(1)
+            return nb_id
+
+    # No match — create new notebook with Joshua_ prefix
+    new_title = f"Joshua_{playlist_title}"
+    print(f"  Creating notebook: {new_title}")
+    success, output = run_command(["notebooklm", "create", new_title, "--json"], capture_json=True)
+    if not success:
+        print(f"Error: Failed to create notebook: {output}", file=sys.stderr)
+        sys.exit(1)
+
+    nb_id = ""
+    if isinstance(output, dict):
+        nb_id = output.get("id", "") or output.get("notebook", {}).get("id", "")
+    if not nb_id:
+        print(f"Error: No notebook ID returned from create: {output}", file=sys.stderr)
+        sys.exit(1)
+
+    success, _ = run_command(["notebooklm", "use", nb_id])
+    if not success:
+        print(f"Error: Failed to select created notebook {nb_id}", file=sys.stderr)
+        sys.exit(1)
+
+    return nb_id
+
+
+def auto_setup(url: str):
+    """Set up folder, auth, and notebook for a playlist URL.
+    After this, cwd is the new subfolder with .notebooklm/ configured and notebook selected."""
+    # 1. Get playlist title
+    print("Getting playlist title...")
+    playlist_title = get_playlist_title(url)
+    print(f"  Playlist: {playlist_title}")
+
+    # 2. Create subfolder
+    folder_name = sanitize_folder_name(playlist_title)
+    print(f"  Folder: {folder_name}/")
+    os.makedirs(folder_name, exist_ok=True)
+    os.chdir(folder_name)
+
+    # 3. Setup .notebooklm/ auth
+    notebooklm_dir = Path(".notebooklm")
+    notebooklm_dir.mkdir(exist_ok=True)
+    storage_src = Path.home() / ".notebooklm" / "storage_state.json"
+    storage_dst = notebooklm_dir / "storage_state.json"
+    if not storage_dst.exists():
+        if not storage_src.exists():
+            print(f"Error: Auth file not found: {storage_src}", file=sys.stderr)
+            print("Run 'notebooklm auth' first to authenticate.", file=sys.stderr)
+            sys.exit(1)
+        shutil.copy2(storage_src, storage_dst)
+        print(f"  Copied auth to .notebooklm/")
+    else:
+        print(f"  Auth already exists")
+    os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
+
+    # 4. Find or create notebook
+    print("Setting up notebook...")
+    nb_id = find_or_create_notebook(playlist_title)
+    print(f"  Notebook ID: {nb_id[:8]}...")
+    print(f"  Working directory: {os.getcwd()}")
+    print()
+
+
 def extract_date_from_title(title: str) -> str | None:
     """Extract a date from video title, returning normalized YYYYMMDD string.
 
@@ -598,6 +720,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
                 result = sp.run([
                     "yt-dlp",
                     "--cookies-from-browser", "chrome",
+                    "--remote-components", "ejs:github",
                     "-x",  # Extract audio
                     "--audio-format", "mp3",
                     "-o", str(mp3_file),
@@ -754,6 +877,7 @@ def whisper_via_colab(
                 result = sp.run([
                     "yt-dlp",
                     "--cookies-from-browser", "chrome",
+                    "--remote-components", "ejs:github",
                     "-x",  # Extract audio
                     "--audio-format", "mp3",
                     "-o", str(mp3_file),
@@ -1009,6 +1133,7 @@ def whisper_via_sshfs(
                 result = sp.run([
                     "yt-dlp",
                     "--cookies-from-browser", "chrome",
+                    "--remote-components", "ejs:github",
                     "-x",  # Extract audio
                     "--audio-format", "mp3",
                     "-o", str(remote_mp3),
@@ -1213,6 +1338,7 @@ def whisper_via_ssh(
                 result = sp.run([
                     "yt-dlp",
                     "--cookies-from-browser", "chrome",
+                    "--remote-components", "ejs:github",
                     "-x",
                     "--audio-format", "mp3",
                     "-o", str(local_mp3),
@@ -2016,6 +2142,16 @@ Examples:
         help="Sort newest first instead of oldest first"
     )
     parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Setup only: create folder, auth, and find/create notebook, then exit"
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Full auto: create folder, find/create notebook, index, reindex, and upload"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output"
@@ -2033,14 +2169,24 @@ def main():
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Session ended")
     atexit.register(print_exit_timestamp)
 
-    # Check for local .notebooklm directory (project-local config)
-    import os
-    local_notebooklm = Path(".notebooklm")
-    if local_notebooklm.is_dir():
-        os.environ["NOTEBOOKLM_HOME"] = str(local_notebooklm.absolute())
-        print(f"Using local config: {local_notebooklm.absolute()}")
-
     args = parse_args()
+
+    # --setup / --auto: create folder, auth, notebook
+    if args.setup or args.auto:
+        if not args.url:
+            print(f"Error: --{'setup' if args.setup else 'auto'} requires a playlist URL", file=sys.stderr)
+            sys.exit(1)
+        auto_setup(args.url)
+        if args.setup:
+            print("Setup complete. You can now cd into the folder and run the script.")
+            sys.exit(0)
+        # --auto continues with index + reindex + upload
+    else:
+        # Check for local .notebooklm directory (project-local config)
+        local_notebooklm = Path(".notebooklm")
+        if local_notebooklm.is_dir():
+            os.environ["NOTEBOOKLM_HOME"] = str(local_notebooklm.absolute())
+            print(f"Using local config: {local_notebooklm.absolute()}")
 
     url = args.url
     delay_seconds = args.interval
@@ -2070,8 +2216,8 @@ def main():
     sshfs_config = None  # Will be set if --remote-sshfs is used and mount succeeds
     ssh_config = None  # Will be set if SSHFS mount fails (fallback to direct SSH)
 
-    # --reindex: rename existing sources to match current index.list, then exit
-    if args.reindex:
+    # --reindex (standalone): rename existing sources to match current index.list, then exit
+    if args.reindex and not args.auto:
         playlist_url_for_reindex = read_playlist_url_from_index(index_file)
         if not playlist_url_for_reindex:
             print("Error: Cannot read playlist URL from index.list", file=sys.stderr)
@@ -2222,6 +2368,11 @@ def main():
         # Write to index.list (with playlist URL on first line)
         write_index_list(sorted_data, playlist_url, index_file)
         print(f"Written to {index_file}")
+
+    # --auto: inline reindex after writing index.list (renames existing sources, syncs tracking files)
+    if args.auto:
+        print(f"\nReindexing existing sources...")
+        reindex_sources(playlist_url, index_file, ok_file, video2txt_file)
 
     # --list-only: exit after creating index.list
     if list_only:

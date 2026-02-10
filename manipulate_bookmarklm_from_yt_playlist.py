@@ -225,6 +225,20 @@ def record_skip_url(index: int, url: str, skip_file: Path):
         f.write(f"{index} {url}\n")
 
 
+def remove_video2txt_entry(url: str, video2txt_file: Path):
+    """Remove a URL entry from the video2txt tracking file (text→YouTube transition)."""
+    if not video2txt_file.exists():
+        return
+    with open(video2txt_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    with open(video2txt_file, 'w', encoding='utf-8') as f:
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[1] == url:
+                continue
+            f.write(line)
+
+
 def record_success_url(index: int, url: str, elapsed_seconds: int, ok_file: Path):
     """Record successful URL to file with index number and elapsed time."""
     with open(ok_file, 'a', encoding='utf-8') as f:
@@ -1886,6 +1900,144 @@ def reindex_sources(playlist_url: str,
         print(f"Remaining: {remaining} videos not yet in notebook (use -r to upload)")
 
 
+def text_back_to_video_effort(
+    target_urls: set[str] | None,
+    ok_file: Path,
+    video2txt_file: Path,
+    delay_seconds: int = 1,
+) -> tuple[int, int, int]:
+    """Try to replace text (whisper) sources with native YouTube sources.
+
+    For each text-type source with a #URL header:
+    - Add the YouTube URL as a new source
+    - If it succeeds: delete old text source, rename new source, update tracking
+    - If it fails: delete the failed new source, keep old text source unchanged
+
+    Args:
+        target_urls: Only attempt these URLs. None = attempt all text sources.
+        ok_file: Path to add_source_ok.txt tracking file.
+        video2txt_file: Path to add_source_video2txt.txt tracking file.
+        delay_seconds: Delay between attempts.
+
+    Returns:
+        (attempted, succeeded, failed) counts.
+    """
+    # 1. List all sources
+    success, output = run_command(
+        ["notebooklm", "source", "list", "--json"],
+        capture_json=True
+    )
+    if not success:
+        print(f"Error: Failed to list sources: {output}", file=sys.stderr)
+        return 0, 0, 0
+
+    sources = output.get("sources", [])
+
+    # 2. Find text sources with #URL headers
+    candidates = []  # list of (source_id, source_title, youtube_url, index)
+    for s in sources:
+        if s.get("type") != "text":
+            continue
+        source_id = s.get("id")
+        source_title = s.get("title", "")
+
+        ft_ok, fulltext = run_command(
+            ["notebooklm", "source", "fulltext", source_id])
+        if not ft_ok or not fulltext.startswith('#URL '):
+            continue
+
+        youtube_url = fulltext.split('\n', 1)[0][5:].strip()
+
+        if target_urls is not None and youtube_url not in target_urls:
+            continue
+
+        # Extract index from [NNN] prefix in title
+        m = re.match(r'\[(\d+)\]', source_title)
+        index = int(m.group(1)) if m else 0
+
+        candidates.append((source_id, source_title, youtube_url, index))
+
+    if not candidates:
+        print("No text sources eligible for YouTube re-import.")
+        return 0, 0, 0
+
+    print(f"\nFound {len(candidates)} text source(s) to attempt YouTube re-import:")
+    for _, title, url, idx in candidates:
+        print(f"  #{idx}: {title[:60]}")
+
+    if not AUTO_YES:
+        answer = input(f"\nProceed with {len(candidates)} re-import attempt(s)? [y/N] ").strip().lower()
+        if answer != 'y':
+            print("Aborted.")
+            return 0, 0, 0
+    else:
+        print()
+
+    # 3. Process each candidate
+    attempted = len(candidates)
+    succeeded = 0
+    failed = 0
+
+    for i, (old_source_id, old_title, youtube_url, index) in enumerate(candidates, 1):
+        print(f"  [{i}/{attempted}] #{index}: {old_title[:60]}")
+        print(f"  URL: {youtube_url}")
+        start_time = time.time()
+
+        # Step A: Add YouTube source
+        print("  Adding YouTube source...", end=" ", flush=True)
+        ok, new_source_id, new_title = add_source(youtube_url)
+        if not ok:
+            print(f"FAILED: {new_source_id}")
+            cleanup_error_sources(silent=True)
+            print(f"  Keeping text source (unchanged)")
+            failed += 1
+            time.sleep(delay_seconds)
+            continue
+        print(f"OK (id: {new_source_id[:8]}...)")
+
+        # Step B: Wait for processing
+        print("  Waiting for processing...", end=" ", flush=True)
+        status_ok, status = wait_for_source_with_status(new_source_id)
+        if not status_ok or status == "error":
+            print(f"ERROR (status: {status})")
+            print(f"  Cleaning up failed source...", end=" ", flush=True)
+            if delete_source(new_source_id):
+                print("OK")
+            else:
+                print("FAILED")
+            cleanup_error_sources(silent=True)
+            print(f"  Keeping text source (unchanged)")
+            failed += 1
+            time.sleep(delay_seconds)
+            continue
+        print(f"OK (status: {status})")
+
+        # Step C: Rename new source to match old title
+        print(f"  Renaming new source...", end=" ", flush=True)
+        if rename_source(new_source_id, old_title):
+            print("OK")
+        else:
+            print("FAILED (continuing anyway)")
+
+        # Step D: Delete old text source
+        print(f"  Deleting old text source...", end=" ", flush=True)
+        if delete_source(old_source_id):
+            print("OK")
+        else:
+            print("FAILED (new source still exists)")
+
+        # Step E: Update tracking files
+        elapsed = int(time.time() - start_time)
+        remove_video2txt_entry(youtube_url, video2txt_file)
+        record_success_url(index, youtube_url, elapsed, ok_file)
+        print(f"  SUCCESS: text -> YouTube ({elapsed}s)")
+        succeeded += 1
+
+        time.sleep(delay_seconds)
+
+    return attempted, succeeded, failed
+
+
 def parse_remote_sshfs(value: str | None) -> tuple[str, str, str] | None:
     """Parse --remote-sshfs argument.
 
@@ -2164,6 +2316,17 @@ Examples:
         help="Full auto: create folder, find/create notebook, index, reindex, and upload"
     )
     parser.add_argument(
+        "--text-back-to-video-effort",
+        type=str,
+        nargs='?',
+        const='__all__',
+        default=None,
+        metavar="URL",
+        dest="text_back_to_video",
+        help="Try to replace whisper text sources with native YouTube sources. "
+             "Optionally provide a video or playlist URL to filter which sources to attempt."
+    )
+    parser.add_argument(
         "-y", "--yes",
         action="store_true",
         help="Auto-accept all yes/no prompts"
@@ -2253,6 +2416,41 @@ def main():
             sys.exit(1)
         reindex_sources(playlist_url_for_reindex,
                         index_file, ok_file, video2txt_file)
+        sys.exit(0)
+
+    # --text-back-to-video-effort (standalone): replace text sources with YouTube, then exit
+    if args.text_back_to_video and not args.auto:
+        target_urls = None  # Default: all text sources
+
+        if args.text_back_to_video != '__all__':
+            url_arg = args.text_back_to_video
+            pid = extract_playlist_id(url_arg)
+            if pid:
+                purl = build_playlist_url(pid)
+                print(f"\nExtracting video URLs from playlist...")
+                videos = get_playlist_videos(purl)
+                target_urls = {v[0] for v in videos}
+                print(f"Found {len(target_urls)} video URLs to filter by")
+            else:
+                target_urls = {url_arg}
+                print(f"\nSingle video URL filter: {url_arg}")
+        else:
+            print(f"\nProcessing all text sources in notebook...")
+
+        attempted, succeeded, failed = text_back_to_video_effort(
+            target_urls=target_urls,
+            ok_file=ok_file,
+            video2txt_file=video2txt_file,
+            delay_seconds=delay_seconds,
+        )
+
+        print(f"\n{'='*60}")
+        print(f"TEXT-BACK-TO-VIDEO SUMMARY")
+        print(f"{'='*60}")
+        print(f"  Attempted:  {attempted}")
+        print(f"  Succeeded:  {succeeded}")
+        print(f"  Failed:     {failed}")
+        print(f"{'='*60}")
         sys.exit(0)
 
     # 1. Get playlist URL (from arg or index.list)
@@ -2430,7 +2628,7 @@ def main():
         print(f"\nProgress: {len(completed_urls)} YouTube + {len(video2txt_urls)} Whisper = {len(all_completed)} completed, {len(pending_entries)} remaining")
 
     if not pending_entries:
-        print("\nAll videos already processed!")
+        print(f"\nAll videos already processed! (Notebook: {notebook_title})")
         print()  # Empty line suffix
         sys.exit(0)
 
@@ -2468,6 +2666,8 @@ def main():
         processed_count += 1
 
         print(f"\n[{processed_count}/{len(pending_entries)}] #{entry_idx}: {video_url}")
+        print(f"  Notebook: {notebook_title}")
+        print(f"  Source:   {cached_title}")
 
         # Track start time for elapsed calculation
         start_time = time.time()
@@ -2632,8 +2832,19 @@ def main():
         print(f"  Waiting {delay_seconds}s before next...")
         time.sleep(delay_seconds)
 
-    # 8. Summary
-    # Reload counts (may have been updated during this run)
+    # 8. Text-back-to-video effort: try to upgrade whisper sources to YouTube
+    print(f"\n{'='*60}")
+    print("TEXT-BACK-TO-VIDEO EFFORT")
+    print(f"{'='*60}")
+    tbv_attempted, tbv_succeeded, tbv_failed = text_back_to_video_effort(
+        target_urls=None,
+        ok_file=ok_file,
+        video2txt_file=video2txt_file,
+        delay_seconds=delay_seconds,
+    )
+
+    # 9. Summary
+    # Reload counts (may have been updated during this run + text-back-to-video)
     final_ok_urls = load_ok_urls(ok_file)
     final_video2txt_urls = load_video2txt_urls(video2txt_file)
     final_total = len(final_ok_urls) + len(final_video2txt_urls)
@@ -2645,6 +2856,7 @@ def main():
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
+    print(f"Notebook: {notebook_title}")
     print(f"Total in playlist:    {len(video_entries)}")
     print(f"Remaining:            {len(video_entries) - final_total - skip_count}")
     if skip_count > 0:
@@ -2654,6 +2866,8 @@ def main():
     print(f"  YouTube direct:     {youtube_count}")
     print(f"  Whisper fallback:   {whisper_count}")
     print(f"  Total:              {success_count}")
+    if tbv_attempted > 0:
+        print(f"  Text->YouTube:      {tbv_succeeded}/{tbv_attempted}")
     print()
     print(f"All time (cumulative):")
     print(f"  YouTube direct:     {len(final_ok_urls)}")

@@ -1936,7 +1936,7 @@ def run_update(start_path: Path) -> None:
         print(f"[{i}/{total}] {rel_path}/ ...", end=" ", flush=True)
 
         try:
-            result = sp.run(
+            result = subprocess.run(
                 [sys.executable, str(script_path), "--auto", playlist_url],
                 cwd=str(folder_path.parent),
                 capture_output=True,
@@ -1973,7 +1973,7 @@ def run_update(start_path: Path) -> None:
                     print("up to date")
                     up_to_date += 1
 
-        except sp.TimeoutExpired:
+        except subprocess.TimeoutExpired:
             print("TIMEOUT (1 hour limit)")
             errors += 1
         except Exception as e:

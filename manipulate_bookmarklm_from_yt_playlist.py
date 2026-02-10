@@ -1900,6 +1900,52 @@ def reindex_sources(playlist_url: str,
         print(f"Remaining: {remaining} videos not yet in notebook (use -r to upload)")
 
 
+AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.webm', '.opus')
+
+
+def cleanup_mp3_files(start_path: Path) -> tuple[int, int]:
+    """Delete audio files in transcripts/ dirs where matching txt exists.
+    Returns (deleted_count, freed_bytes)."""
+    total_deleted = 0
+    total_freed = 0
+
+    for dirpath, dirnames, filenames in os.walk(start_path):
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+        dirpath = Path(dirpath)
+
+        # Only process directories named 'transcripts'
+        if dirpath.name != 'transcripts':
+            continue
+
+        dir_deleted = 0
+        dir_freed = 0
+        for fname in filenames:
+            fpath = dirpath / fname
+            if fpath.suffix.lower() not in AUDIO_EXTENSIONS:
+                continue
+            txt_path = fpath.with_suffix('.txt')
+            if txt_path.exists():
+                size = fpath.stat().st_size
+                fpath.unlink()
+                dir_deleted += 1
+                dir_freed += size
+
+        if dir_deleted > 0:
+            rel = dirpath.relative_to(start_path) if dirpath != start_path else dirpath.name
+            freed_mb = dir_freed / (1024 * 1024)
+            print(f"  {rel}/: {dir_deleted} audio file(s) deleted ({freed_mb:.1f} MB)")
+            total_deleted += dir_deleted
+            total_freed += dir_freed
+
+    if total_deleted > 0:
+        total_mb = total_freed / (1024 * 1024)
+        print(f"\nTotal: {total_deleted} audio file(s) deleted, {total_mb:.1f} MB freed")
+    else:
+        print("No audio files to clean up (all transcripts already clean).")
+
+    return total_deleted, total_freed
+
+
 def find_playlist_folders(start_path: Path) -> list[tuple[Path, str]]:
     """Find all managed playlist folders under start_path.
     Returns list of (folder_path, playlist_url) sorted by path."""
@@ -2479,6 +2525,17 @@ Examples:
         help="Traverse PATH (default: current directory) and run --auto for each playlist folder found."
     )
     parser.add_argument(
+        "--cleanup",
+        type=str,
+        nargs='?',
+        const='.',
+        default=None,
+        metavar="PATH",
+        dest="cleanup_path",
+        help="Delete audio files in transcripts/ dirs where matching txt exists. "
+             "Traverses PATH (default: current directory)."
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="With --update: stream full subprocess output per folder (default: short status lines)."
@@ -2515,6 +2572,16 @@ def main():
             print(f"Error: {start_path} is not a directory", file=sys.stderr)
             sys.exit(1)
         run_update(start_path, verbose=args.verbose, debug=args.debug)
+        sys.exit(0)
+
+    # --cleanup: delete audio files where matching txt exists
+    if args.cleanup_path is not None:
+        start_path = Path(args.cleanup_path).resolve()
+        if not start_path.is_dir():
+            print(f"Error: {start_path} is not a directory", file=sys.stderr)
+            sys.exit(1)
+        print(f"Cleaning up audio files under {start_path}/\n")
+        cleanup_mp3_files(start_path)
         sys.exit(0)
 
     # --setup / --auto: create folder, auth, notebook
@@ -2881,6 +2948,12 @@ def main():
                                 success_count += 1
                                 whisper_count += 1
                                 print(f"  SUCCESS [Whisper]: Recorded to {video2txt_file}")
+                                # Delete audio file to save space (txt is source of truth)
+                                for ext in ('.mp3', '.m4a', '.webm', '.opus'):
+                                    audio_path = Path(txt_file).with_suffix(ext)
+                                    if audio_path.exists():
+                                        audio_path.unlink()
+                                        print(f"  Cleaned up: {audio_path.name}")
                             else:
                                 print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
                                 release_index(entry_idx, lock_file)
@@ -2948,6 +3021,12 @@ def main():
                                 success_count += 1
                                 whisper_count += 1
                                 print(f"  SUCCESS [Whisper]: Recorded to {video2txt_file}")
+                                # Delete audio file to save space (txt is source of truth)
+                                for ext in ('.mp3', '.m4a', '.webm', '.opus'):
+                                    audio_path = Path(txt_file).with_suffix(ext)
+                                    if audio_path.exists():
+                                        audio_path.unlink()
+                                        print(f"  Cleaned up: {audio_path.name}")
                             else:
                                 print(f"\n  FATAL [#{entry_idx}]: Add text source failed: {text_source_id}")
                                 release_index(entry_idx, lock_file)

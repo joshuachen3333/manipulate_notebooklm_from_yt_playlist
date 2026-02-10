@@ -1916,8 +1916,14 @@ def find_playlist_folders(start_path: Path) -> list[tuple[Path, str]]:
     return results
 
 
-def run_update(start_path: Path) -> None:
-    """Run --auto for each playlist folder found under start_path."""
+def run_update(start_path: Path, quiet: bool = False) -> None:
+    """Run --auto for each playlist folder found under start_path.
+
+    Args:
+        start_path: Root directory to search for playlist folders.
+        quiet: If True, show only short status lines. If False (default),
+               stream full subprocess output to terminal in real-time.
+    """
     folders = find_playlist_folders(start_path)
     if not folders:
         print(f"No playlist folders found under {start_path}")
@@ -1933,52 +1939,91 @@ def run_update(start_path: Path) -> None:
 
     for i, (folder_path, playlist_url) in enumerate(folders, 1):
         rel_path = folder_path.relative_to(start_path) if folder_path != start_path else folder_path.name
-        print(f"[{i}/{total}] {rel_path}/ ...", end=" ", flush=True)
+        header = f"[{i}/{total}] {rel_path}/"
 
-        try:
-            result = subprocess.run(
-                [sys.executable, str(script_path), "--auto", playlist_url],
-                cwd=str(folder_path.parent),
-                capture_output=True,
-                text=True,
-                timeout=3600,  # 1 hour per playlist max
-            )
-            output = result.stdout + result.stderr
+        if quiet:
+            print(f"{header} ...", end=" ", flush=True)
 
-            # Write full log
-            log_file = folder_path / "update.log"
-            with open(log_file, 'w', encoding='utf-8') as f:
-                f.write(output)
-
-            if result.returncode != 0:
-                print(f"ERROR (exit code {result.returncode}, see update.log)")
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(script_path), "--auto", playlist_url],
+                    cwd=str(folder_path.parent),
+                    capture_output=True,
+                    text=True,
+                    timeout=3600,
+                )
+                output = result.stdout + result.stderr
+                returncode = result.returncode
+            except subprocess.TimeoutExpired:
+                print("TIMEOUT (1 hour limit)")
                 errors += 1
-            elif "All videos already processed!" in output:
-                # Extract video count from output
+                continue
+            except Exception as e:
+                print(f"ERROR: {e}")
+                errors += 1
+                continue
+
+        else:
+            # Verbose: stream output in real-time while collecting for log
+            print(f"\n{'='*60}")
+            print(header)
+            print(f"{'='*60}")
+
+            output_lines = []
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, str(script_path), "--auto", playlist_url],
+                    cwd=str(folder_path.parent),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                for line in proc.stdout:
+                    print(line, end="", flush=True)
+                    output_lines.append(line)
+                proc.wait(timeout=3600)
+                output = "".join(output_lines)
+                returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                print("\nTIMEOUT (1 hour limit)")
+                errors += 1
+                continue
+            except Exception as e:
+                print(f"\nERROR: {e}")
+                errors += 1
+                continue
+
+        # Write full log
+        log_file = folder_path / "update.log"
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write(output)
+
+        # Classify result
+        if returncode != 0:
+            if quiet:
+                print(f"ERROR (exit code {returncode}, see update.log)")
+            errors += 1
+        elif "All videos already processed!" in output:
+            if quiet:
                 count_match = re.search(r'(\d+) completed, 0 remaining', output)
                 count_str = f" ({count_match.group(1)} videos)" if count_match else ""
                 print(f"up to date{count_str}")
-                up_to_date += 1
-            else:
-                # Extract session stats from output
-                yt_match = re.search(r'YouTube direct:\s+(\d+)', output)
-                wh_match = re.search(r'Whisper fallback:\s+(\d+)', output)
-                yt = int(yt_match.group(1)) if yt_match else 0
-                wh = int(wh_match.group(1)) if wh_match else 0
-                new_count = yt + wh
-                if new_count > 0:
+            up_to_date += 1
+        else:
+            yt_match = re.search(r'YouTube direct:\s+(\d+)', output)
+            wh_match = re.search(r'Whisper fallback:\s+(\d+)', output)
+            yt = int(yt_match.group(1)) if yt_match else 0
+            wh = int(wh_match.group(1)) if wh_match else 0
+            new_count = yt + wh
+            if new_count > 0:
+                if quiet:
                     print(f"{new_count} new video(s) uploaded")
-                    updated += 1
-                else:
+                updated += 1
+            else:
+                if quiet:
                     print("up to date")
-                    up_to_date += 1
-
-        except subprocess.TimeoutExpired:
-            print("TIMEOUT (1 hour limit)")
-            errors += 1
-        except Exception as e:
-            print(f"ERROR: {e}")
-            errors += 1
+                up_to_date += 1
 
     print(f"\n{'='*60}")
     print("UPDATE SUMMARY")
@@ -2428,6 +2473,11 @@ Examples:
         help="Traverse PATH (default: current directory) and run --auto for each playlist folder found."
     )
     parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="With --update: show only short status lines instead of full output per folder."
+    )
+    parser.add_argument(
         "-y", "--yes",
         action="store_true",
         help="Auto-accept all yes/no prompts"
@@ -2458,7 +2508,7 @@ def main():
         if not start_path.is_dir():
             print(f"Error: {start_path} is not a directory", file=sys.stderr)
             sys.exit(1)
-        run_update(start_path)
+        run_update(start_path, quiet=args.quiet)
         sys.exit(0)
 
     # --setup / --auto: create folder, auth, notebook

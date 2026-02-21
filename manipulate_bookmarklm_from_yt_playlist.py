@@ -2006,6 +2006,7 @@ def run_update(start_path: Path, verbose: bool = False, debug: bool = False) -> 
                     cwd=str(folder_path.parent),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
                     text=True,
                 )
                 for line in proc.stdout:
@@ -2034,6 +2035,7 @@ def run_update(start_path: Path, verbose: bool = False, debug: bool = False) -> 
                     capture_output=True,
                     text=True,
                     timeout=3600,
+                    stdin=subprocess.DEVNULL,
                 )
                 output = result.stdout + result.stderr
                 returncode = result.returncode

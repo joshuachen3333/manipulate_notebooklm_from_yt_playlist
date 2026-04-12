@@ -2135,6 +2135,7 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
     up_to_date = 0
     updated = 0
     errors = 0
+    updated_details = []  # list of (rel_path, [new_video_titles])
     script_path = Path(__file__).resolve()
     stream_output = verbose or debug
 
@@ -2236,6 +2237,15 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
                 if not stream_output:
                     print(f"{new_count} new video(s) uploaded")
                 updated += 1
+                # Extract titles of newly added videos from output
+                new_titles = []
+                # YouTube direct: "        → [###] 標題"
+                for m in re.finditer(r'→ (\[\d+\] .+)', output):
+                    new_titles.append(m.group(1))
+                # Whisper: "Adding transcript as text source: [###] 標題"
+                for m in re.finditer(r'Adding transcript as text source: (\[\d+\] .+)', output):
+                    new_titles.append(m.group(1))
+                updated_details.append((str(rel_path), new_titles))
             else:
                 if not stream_output:
                     print("up to date")
@@ -2249,6 +2259,17 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
     print(f"  Updated:            {updated}")
     if errors > 0:
         print(f"  Errors:             {errors}")
+
+    if updated_details:
+        print(f"\n  Updated playlists:")
+        for rel_path, titles in updated_details:
+            print(f"\n  {rel_path}/")
+            if titles:
+                for t in titles:
+                    print(f"    + {t}")
+            else:
+                print(f"    (new videos added)")
+
     print(f"{'='*60}")
 
 

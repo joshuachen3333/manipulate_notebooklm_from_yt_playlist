@@ -6,7 +6,7 @@ Prerequisites:
     pip install notebooklm-py opencc-python-reimplemented yt-dlp openai-whisper gradio_client
 
 Setup (first time):
-    notebooklm auth                   # Authenticate with Google (opens browser)
+    notebooklm login                   # Authenticate with Google (opens browser)
     notebooklm list                   # List available notebooks
     notebooklm use <notebook_id>      # Select target notebook
     notebooklm status                 # Verify notebook is selected
@@ -38,6 +38,45 @@ DEFAULT_DELAY_SECONDS = 1
 DEBUG = False  # Set via --debug flag
 AUTO_YES = False  # Set via -y flag
 
+# Auth failure patterns (case-insensitive match against stderr/stdout)
+AUTH_FAIL_PATTERNS = [
+    "auth", "login", "session", "expired", "unauthorized", "401",
+    "forbidden", "credential", "sign in", "signed out", "not authenticated",
+    "token", "cookie",
+]
+
+
+def _is_auth_failure(output: str) -> bool:
+    """Check if command output suggests an auth failure."""
+    lower = output.lower()
+    # Must look like an error AND mention auth-related terms
+    error_indicators = ["error", "fail", "unable", "denied", "refused", "invalid", "expired"]
+    has_error = any(e in lower for e in error_indicators)
+    has_auth = any(a in lower for a in AUTH_FAIL_PATTERNS)
+    return has_error and has_auth
+
+
+def refresh_auth() -> bool:
+    """Copy fresh auth from ~/.notebooklm/ to local .notebooklm/ if it exists and is newer.
+    Returns True if auth was refreshed."""
+    local_dir = Path(os.environ.get("NOTEBOOKLM_HOME", ".notebooklm"))
+    local_auth = local_dir / "storage_state.json"
+    global_auth = Path.home() / ".notebooklm" / "storage_state.json"
+
+    if not local_dir.exists() or not local_auth.exists():
+        return False  # No local config, nothing to refresh
+
+    if not global_auth.exists():
+        return False
+
+    # Only refresh if global is newer than local
+    if global_auth.stat().st_mtime <= local_auth.stat().st_mtime:
+        return False
+
+    shutil.copy2(global_auth, local_auth)
+    print(f"  [Auth refreshed from {global_auth}]")
+    return True
+
 
 def extract_playlist_id(url: str) -> str | None:
     """Extract playlist ID from various YouTube URL formats."""
@@ -56,24 +95,53 @@ def build_playlist_url(playlist_id: str) -> str:
     return f"https://www.youtube.com/playlist?list={playlist_id}"
 
 
-def run_command(cmd: list[str], capture_json: bool = False) -> tuple[bool, str | dict]:
-    """Run a command and return (success, output/parsed_json)."""
+def run_command(cmd: list[str], capture_json: bool = False, _retried_auth: bool = False) -> tuple[bool, str | dict]:
+    """Run a command and return (success, output/parsed_json).
+    On auth failure for notebooklm commands, refreshes auth and retries once."""
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            return False, result.stderr or result.stdout
+            error_output = result.stderr or result.stdout
+            # Auto-refresh auth on failure for notebooklm commands
+            if (not _retried_auth and cmd and cmd[0] == "notebooklm"
+                    and _is_auth_failure(error_output)):
+                if refresh_auth():
+                    return run_command(cmd, capture_json=capture_json, _retried_auth=True)
+            return False, error_output
 
         output = result.stdout.strip()
         if capture_json:
             try:
                 return True, json.loads(output)
             except json.JSONDecodeError:
+                # Sometimes auth failure returns HTML instead of JSON
+                if (not _retried_auth and cmd and cmd[0] == "notebooklm"
+                        and _is_auth_failure(output)):
+                    if refresh_auth():
+                        return run_command(cmd, capture_json=capture_json, _retried_auth=True)
                 return False, f"Failed to parse JSON: {output}"
         return True, output
     except subprocess.TimeoutExpired:
         return False, "Command timed out"
     except Exception as e:
         return False, str(e)
+
+
+def check_auth_valid() -> bool:
+    """Check if NotebookLM auth is valid by making a network call.
+    'notebooklm status' only reads local cache, so we use 'notebooklm list'
+    which actually hits Google's servers. Returns True if auth works."""
+    success, output = run_command(["notebooklm", "list", "--json"], capture_json=True)
+    if not success:
+        if isinstance(output, str) and _is_auth_failure(output):
+            return False
+        return True
+    # notebooklm list returns exit 0 even on auth failure, but sets "error": true
+    if isinstance(output, dict) and output.get("error"):
+        msg = output.get("message", "")
+        if _is_auth_failure(msg):
+            return False
+    return True
 
 
 def check_notebook_selected() -> tuple[bool, str, str]:
@@ -439,7 +507,7 @@ def find_or_create_notebook(playlist_title: str) -> str:
     success, output = run_command(["notebooklm", "list", "--json"], capture_json=True)
     if not success:
         print(f"Error: Cannot list notebooks: {output}", file=sys.stderr)
-        print("Try running 'notebooklm auth' to re-authenticate.", file=sys.stderr)
+        print("Try running 'notebooklm login' to re-authenticate.", file=sys.stderr)
         sys.exit(1)
 
     notebooks = output.get("notebooks", [])
@@ -509,15 +577,19 @@ def auto_setup(url: str):
     notebooklm_dir.mkdir(exist_ok=True)
     storage_src = Path.home() / ".notebooklm" / "storage_state.json"
     storage_dst = notebooklm_dir / "storage_state.json"
-    if not storage_dst.exists():
-        if not storage_src.exists():
+    if not storage_src.exists():
+        if not storage_dst.exists():
             print(f"Error: Auth file not found: {storage_src}", file=sys.stderr)
-            print("Run 'notebooklm auth' first to authenticate.", file=sys.stderr)
+            print("Run 'notebooklm login' first to authenticate.", file=sys.stderr)
             sys.exit(1)
+    if not storage_dst.exists():
         shutil.copy2(storage_src, storage_dst)
         print(f"  Copied auth to .notebooklm/")
+    elif storage_src.exists() and storage_src.stat().st_mtime > storage_dst.stat().st_mtime:
+        shutil.copy2(storage_src, storage_dst)
+        print(f"  Auth refreshed from {storage_src}")
     else:
-        print(f"  Auth already exists")
+        print(f"  Auth already exists (up to date)")
     os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
 
     # 4. Find or create notebook
@@ -1962,22 +2034,103 @@ def find_playlist_folders(start_path: Path) -> list[tuple[Path, str]]:
     return results
 
 
-def run_update(start_path: Path, verbose: bool = False, debug: bool = False) -> None:
-    """Run --auto for each playlist folder found under start_path.
+def run_reauth(start_paths: list[Path]) -> None:
+    """Copy fresh auth from ~/.notebooklm/ to all local .notebooklm/ dirs under start_paths."""
+    global_auth = Path.home() / ".notebooklm" / "storage_state.json"
+    if not global_auth.exists():
+        print(f"Error: Global auth file not found: {global_auth}", file=sys.stderr)
+        print("Run 'notebooklm login' first to authenticate.", file=sys.stderr)
+        sys.exit(1)
+
+    # Find all .notebooklm/ dirs under start_paths
+    count = 0
+    for start_path in start_paths:
+        for dirpath, dirnames, filenames in os.walk(start_path):
+            dirnames[:] = [d for d in dirnames if d != 'transcripts']
+            notebooklm_dir = Path(dirpath) / ".notebooklm"
+            if notebooklm_dir.is_dir():
+                dst = notebooklm_dir / "storage_state.json"
+                shutil.copy2(global_auth, dst)
+                count += 1
+
+    print(f"Re-authenticated {count} folder(s) from {global_auth}")
+
+
+def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = False) -> None:
+    """Run --auto for each playlist folder found under start_paths.
 
     Args:
-        start_path: Root directory to search for playlist folders.
+        start_paths: Root directories to search for playlist folders.
         verbose: If True, stream full subprocess output to terminal.
         debug: If True, stream output AND pass --debug to subprocess.
                Default (both False): short status lines, detailed log.
     """
-    folders = find_playlist_folders(start_path)
+    folders = []
+    for start_path in start_paths:
+        found = find_playlist_folders(start_path)
+        if not found:
+            print(f"No playlist folders found under {start_path}")
+        folders.extend(found)
+    # Deduplicate by resolved path, preserving order
+    seen = set()
+    unique_folders = []
+    for f in folders:
+        key = f[0].resolve()
+        if key not in seen:
+            seen.add(key)
+            unique_folders.append(f)
+    folders = unique_folders
+
     if not folders:
-        print(f"No playlist folders found under {start_path}")
         return
 
     total = len(folders)
-    print(f"Updating {total} playlist folder(s) under {start_path}/\n")
+    path_label = ", ".join(str(p) for p in start_paths)
+
+    # Pre-flight auth check using a local folder's auth (what subprocesses actually use)
+    # Find the first folder with .notebooklm/ to test
+    print("Checking NotebookLM auth...", end=" ", flush=True)
+    test_folder = None
+    for folder_path, _ in folders:
+        local_auth = folder_path / ".notebooklm"
+        if local_auth.is_dir():
+            test_folder = folder_path
+            break
+
+    if test_folder:
+        # Test with the local auth that subprocesses will use
+        saved_home = os.environ.get("NOTEBOOKLM_HOME")
+        os.environ["NOTEBOOKLM_HOME"] = str(test_folder / ".notebooklm")
+        auth_ok = check_auth_valid()
+        if saved_home is not None:
+            os.environ["NOTEBOOKLM_HOME"] = saved_home
+        else:
+            os.environ.pop("NOTEBOOKLM_HOME", None)
+
+        if not auth_ok:
+            # Local auth is stale — check if global auth works
+            global_auth = Path.home() / ".notebooklm" / "storage_state.json"
+            if global_auth.exists() and check_auth_valid():
+                # Global is good, auto-refresh all local copies
+                print("local copies stale, refreshing...")
+                run_reauth(start_paths)
+            else:
+                print("EXPIRED")
+                print("\nError: NotebookLM auth has expired.", file=sys.stderr)
+                print("Run 'notebooklm login' to re-authenticate, then '--reauth' to update all folders.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("OK")
+    else:
+        # No local .notebooklm/ dirs yet — check global auth
+        if not check_auth_valid():
+            print("EXPIRED")
+            print("\nError: NotebookLM auth has expired.", file=sys.stderr)
+            print("Run 'notebooklm login' to re-authenticate.", file=sys.stderr)
+            sys.exit(1)
+        print("OK")
+
+    print(f"Updating {total} playlist folder(s) under {path_label}\n")
 
     up_to_date = 0
     updated = 0
@@ -1986,7 +2139,16 @@ def run_update(start_path: Path, verbose: bool = False, debug: bool = False) -> 
     stream_output = verbose or debug
 
     for i, (folder_path, playlist_url) in enumerate(folders, 1):
-        rel_path = folder_path.relative_to(start_path) if folder_path != start_path else folder_path.name
+        # Find the matching start_path for this folder to compute relative path
+        matching_root = None
+        for sp in start_paths:
+            try:
+                folder_path.relative_to(sp)
+                matching_root = sp
+                break
+            except ValueError:
+                continue
+        rel_path = folder_path.relative_to(matching_root) if matching_root and folder_path != matching_root else folder_path.name
         header = f"[{i}/{total}] {rel_path}/"
 
         cmd = [sys.executable, str(script_path), "--auto", playlist_url]
@@ -2399,10 +2561,10 @@ Examples:
         """
     )
     parser.add_argument(
-        "url",
-        nargs="?",  # Optional when using -r
-        default=None,
-        help="YouTube playlist URL (optional with -r if index.list exists)"
+        "positional_args",
+        nargs="*",
+        default=[],
+        help="YouTube playlist URL, or with --update: directory paths to update"
     )
     parser.add_argument(
         "-i", "--interval",
@@ -2518,13 +2680,18 @@ Examples:
     )
     parser.add_argument(
         "--update",
-        type=str,
-        nargs='?',
-        const='.',
-        default=None,
-        metavar="PATH",
-        dest="update_path",
-        help="Traverse PATH (default: current directory) and run --auto for each playlist folder found."
+        action="store_true",
+        default=False,
+        dest="update",
+        help="Traverse directory paths (given as positional args, default: current directory) "
+             "and run --auto for each playlist folder found."
+    )
+    parser.add_argument(
+        "--reauth",
+        action="store_true",
+        default=False,
+        help="Copy fresh auth from ~/.notebooklm/ to all local .notebooklm/ folders. "
+             "Use after 'notebooklm login' to refresh expired auth across all playlist folders."
     )
     parser.add_argument(
         "--cleanup",
@@ -2568,12 +2735,29 @@ def main():
     args = parse_args()
 
     # --update: traverse directory tree and run --auto for each playlist folder
-    if args.update_path is not None:
-        start_path = Path(args.update_path).resolve()
-        if not start_path.is_dir():
-            print(f"Error: {start_path} is not a directory", file=sys.stderr)
-            sys.exit(1)
-        run_update(start_path, verbose=args.verbose, debug=args.debug)
+    if args.update:
+        paths = args.positional_args if args.positional_args else ['.']
+        start_paths = []
+        for p in paths:
+            sp = Path(p).resolve()
+            if not sp.is_dir():
+                print(f"Error: {sp} is not a directory", file=sys.stderr)
+                sys.exit(1)
+            start_paths.append(sp)
+        run_update(start_paths, verbose=args.verbose, debug=args.debug)
+        sys.exit(0)
+
+    # --reauth: copy fresh auth to all local .notebooklm/ folders
+    if args.reauth:
+        paths = args.positional_args if args.positional_args else ['.']
+        start_paths = []
+        for p in paths:
+            sp = Path(p).resolve()
+            if not sp.is_dir():
+                print(f"Error: {sp} is not a directory", file=sys.stderr)
+                sys.exit(1)
+            start_paths.append(sp)
+        run_reauth(start_paths)
         sys.exit(0)
 
     # --cleanup: delete audio files where matching txt exists
@@ -2586,6 +2770,9 @@ def main():
         cleanup_mp3_files(start_path)
         sys.exit(0)
 
+    # Extract URL from positional args (first positional arg when not --update)
+    args.url = args.positional_args[0] if args.positional_args else None
+
     # --setup / --auto: create folder, auth, notebook
     if args.setup or args.auto:
         if not args.url:
@@ -2593,6 +2780,21 @@ def main():
             sys.exit(1)
         auto_setup(args.url)
         if args.setup:
+            # Also create index.list so --update can find this folder later
+            pid = extract_playlist_id(args.url)
+            purl = build_playlist_url(pid)
+            idx_file = Path("index.list")
+            if not idx_file.exists():
+                print("Creating index.list...")
+                video_data = get_playlist_videos(purl)
+                if video_data:
+                    sorted_data = sort_videos_by_date(video_data, reverse=False)
+                    write_index_list(sorted_data, purl, idx_file)
+                    print(f"  Written {len(sorted_data)} videos to index.list")
+                else:
+                    print("Warning: No videos found, index.list not created.", file=sys.stderr)
+            else:
+                print(f"  index.list already exists")
             print("Setup complete. You can now cd into the folder and run the script.")
             sys.exit(0)
         # --auto continues with index + reindex + upload

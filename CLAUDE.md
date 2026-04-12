@@ -27,8 +27,8 @@ python3 manipulate_bookmarklm_from_yt_playlist.py --list-only "https://..."
 # (matches by title against YouTube playlist)
 python3 manipulate_bookmarklm_from_yt_playlist.py --reindex
 
-# Reindex with old index.list for [NNN]-based matching (faster, more reliable)
-python3 manipulate_bookmarklm_from_yt_playlist.py --reindex /path/to/old/index.list
+# Reindex: rename notebook sources to match current sorted index.list
+python3 manipulate_bookmarklm_from_yt_playlist.py --reindex
 
 # Resume from where you left off
 python3 manipulate_bookmarklm_from_yt_playlist.py -r
@@ -80,6 +80,32 @@ python3 manipulate_bookmarklm_from_yt_playlist.py --debug --colab-url https://xx
 python3 manipulate_bookmarklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
 # Terminal 2 (auto-skips videos being processed, picks next available)
 python3 manipulate_bookmarklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
+
+# Full auto: setup folder + notebook + index + reindex + upload (one command)
+python3 manipulate_bookmarklm_from_yt_playlist.py --auto "https://..."
+
+# Setup only: create folder, auth, find/create notebook, then exit
+python3 manipulate_bookmarklm_from_yt_playlist.py --setup "https://..."
+
+# Update all playlist folders under a directory (batch --auto)
+python3 manipulate_bookmarklm_from_yt_playlist.py --update              # current dir
+python3 manipulate_bookmarklm_from_yt_playlist.py --update /path/to/dir # specific dir
+python3 manipulate_bookmarklm_from_yt_playlist.py --update -v           # verbose output
+python3 manipulate_bookmarklm_from_yt_playlist.py --update --debug      # debug output
+
+# Cleanup: delete audio files where matching txt exists
+python3 manipulate_bookmarklm_from_yt_playlist.py --cleanup             # current dir
+python3 manipulate_bookmarklm_from_yt_playlist.py --cleanup /path/to/dir
+
+# Try to replace whisper text sources with native YouTube sources
+python3 manipulate_bookmarklm_from_yt_playlist.py --text-back-to-video-effort          # all text sources
+python3 manipulate_bookmarklm_from_yt_playlist.py --text-back-to-video-effort "https://..." # specific URL
+
+# Disable remote SSHFS (on by default with cschen@genesis)
+python3 manipulate_bookmarklm_from_yt_playlist.py --no-remote-sshfs "https://..."
+
+# Auto-accept all yes/no prompts
+python3 manipulate_bookmarklm_from_yt_playlist.py -y -r "https://..."
 ```
 
 ### URL Handling (Fool-proof)
@@ -160,9 +186,41 @@ When using `--remote-sshfs user@host[:path]`:
 4. Delete remote mp3 and txt (cleanup)
 ```
 
-Default remote path: `/genesis/tmp`
+Default remote: `cschen@genesis:/genesis/tmp` (enabled by default, use `--no-remote-sshfs` to disable)
 
 **Resume from partial whisper state**: If script exits during whisper (e.g., download succeeded but transcription failed), the next `-r` run will reuse the existing mp3/txt files instead of restarting from scratch.
+
+## Auto Mode (`--auto`)
+
+Fully automated single-playlist processing in one command:
+```
+1. auto_setup(): get playlist title → create subfolder → copy auth → find/create notebook
+2. Create index.list (sorted by date)
+3. Reindex existing sources (if any)
+4. Upload all pending videos (same as normal flow)
+5. Text-back-to-video effort (try to upgrade whisper sources)
+```
+
+## Update Mode (`--update [PATH]`)
+
+Batch processing across multiple playlists:
+```
+1. Find all subdirs under PATH containing index.list files
+2. For each: run `--auto` as subprocess (1-hour timeout per folder)
+3. Log output to update.log in each folder
+4. Print summary (up-to-date / updated / errors)
+```
+
+## Text-Back-to-Video (`--text-back-to-video-effort`)
+
+Attempts to replace whisper text sources with native YouTube imports:
+```
+1. List all sources, find text-type sources with #URL header
+2. For each: try notebooklm source add <youtube_url>
+3. If success: delete old text source, rename new source, update tracking
+4. If fail: delete failed new source, keep old text source unchanged
+```
+Also runs automatically at the end of every normal upload session.
 
 ## File Structure
 
@@ -174,6 +232,7 @@ Default remote path: `/genesis/tmp`
 ├── add_source_video2txt.txt # Successfully uploaded (via whisper)
 ├── add_source_skip.txt     # Skipped (when --without-whisper)
 ├── add_source_working.lock # Multi-session coordination (auto-managed)
+├── update.log              # Last --update run output (per folder)
 ├── transcripts/            # Whisper output folder
 │   ├── <title>.mp3         # Downloaded audio
 │   ├── <title>.txt         # Transcripts (正體中文)
@@ -228,6 +287,14 @@ Format: `<index> <url>`
 | `mount_sshfs(user, host, path, mount_point)` | Mount remote filesystem via SSHFS |
 | `unmount_sshfs(mount_point)` | Unmount SSHFS mount point |
 | `add_text_source(txt, title)` | Add text file to NotebookLM |
+| `auto_setup(url)` | Create subfolder, copy auth, find/create notebook |
+| `find_or_create_notebook(title)` | Find existing or create new notebook by playlist title |
+| `text_back_to_video_effort(...)` | Replace whisper text sources with native YouTube sources |
+| `run_update(start_path, verbose, debug)` | Traverse dirs, run `--auto` for each playlist folder |
+| `cleanup_mp3_files(start_path)` | Delete audio files where matching txt exists |
+| `find_playlist_folders(start_path)` | Find subdirs containing index.list files |
+| `claim_index(idx, lock_file)` | Multi-session: atomically claim a video index |
+| `release_index(idx, lock_file)` | Multi-session: release a claimed index |
 
 ## Dependencies
 

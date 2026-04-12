@@ -1,0 +1,24 @@
+# prompt.history — meaningful prompts and design decisions
+
+## 1. [2026-04-12] Auth expiry detection + --reauth for --update
+
+User ran `--update --verbose` on 262 playlist folders and hit auth expired errors on every single folder — no fail-fast.
+
+Prompts:
+- "does this mean notebooklm auth expires?" — yes, Google session cookies expire
+- "I want to implement this notebooklm status, to prevent all auth failure in case the auto expires, btw, give me a --reauth that copy the auth data again and overwrite the current one"
+- "did you upgrade the code?" — realized script is a symlink, changes are live
+- "but I didn't get the new update benefit, still error all the way" — pre-flight said OK but subprocesses still failed
+
+Key discoveries & fixes:
+1. `notebooklm status` is offline-only (reads context.json cache), never hits network — useless for auth validation
+2. `notebooklm list` hits network but returns exit code 0 on auth failure — error is in JSON body `"error": true`
+3. Pre-flight was testing global `~/.notebooklm/` auth, but subprocesses use local `.notebooklm/` copies (stale)
+4. `notebooklm auth` was renamed to `notebooklm login` in newer CLI versions
+
+Final design:
+- `check_auth_valid()` uses `notebooklm list --json` and checks both exit code and JSON `"error"` field
+- `run_update()` pre-flight tests with a real local folder's `.notebooklm/` auth (not global)
+- If local is stale but global is valid → auto-runs `run_reauth()` to refresh all copies (no manual `--reauth` needed)
+- If both expired → fail fast with "run notebooklm login"
+- `--reauth` flag available as standalone for manual refresh

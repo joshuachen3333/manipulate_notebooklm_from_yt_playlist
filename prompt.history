@@ -22,3 +22,22 @@ Final design:
 - If local is stale but global is valid → auto-runs `run_reauth()` to refresh all copies (no manual `--reauth` needed)
 - If both expired → fail fast with "run notebooklm login"
 - `--reauth` flag available as standalone for manual refresh
+
+## 2. [2026-04-15] Fix --update summary: only list genuine new uploads
+
+User ran `--update` and got a summary where 4 "updated" folders listed far more "+ [###] title" entries than videos actually added. For MIT microeconomics, the summary showed 49 lines but only 1 new video was actually inserted.
+
+Prompts:
+- "what happened to that 4 updates?" — confused by inflated title lists under each updated folder
+- "if only 1 video inserted to the playlist, everyone's name is re-indexed/re-numbered, but I don't care the new numbering for existing video, I just want to know the newly added/inserted video and what is the playlist or folder name."
+
+Root cause:
+- `run_update()` extracted new-upload titles with regex `→ (\[\d+\] .+)`, which also captured reindex output
+- Reindex emits `→ [###] title` three times per run: (1) dry-run plan listing, (2) execution `... OK` lines, (3) text-back-to-video-effort renames
+- So a single new insert that triggers renumbering of N existing sources produced ~2N+1 "+ ..." lines in summary
+
+Fix:
+- Tightened regex to `^ {8}→ (\[\d+\] .+)$` with re.MULTILINE
+- Genuine YouTube upload rename (line ~3276) uses 8-space indent with arrow at start of line
+- Reindex lines all use 2-space indent with `old_label → ...` (text before arrow) → now excluded
+- Whisper detection unchanged (distinct `Adding transcript as text source:` marker)

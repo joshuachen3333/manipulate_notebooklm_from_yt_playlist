@@ -2237,10 +2237,13 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
                 if not stream_output:
                     print(f"{new_count} new video(s) uploaded")
                 updated += 1
-                # Extract titles of newly added videos from output
+                # Extract titles of newly added videos from output.
+                # Only genuine uploads — skip reindex renames of existing sources.
+                # YouTube direct rename line (upload flow, line ~3276):
+                #   "        → [###] 標題"  (8-space indent, arrow at start)
+                # Reindex lines use "  old_label → [###] ..." (2-space indent, old_label before arrow) — excluded.
                 new_titles = []
-                # YouTube direct: "        → [###] 標題"
-                for m in re.finditer(r'→ (\[\d+\] .+)', output):
+                for m in re.finditer(r'^ {8}→ (\[\d+\] .+)$', output, re.MULTILINE):
                     new_titles.append(m.group(1))
                 # Whisper: "Adding transcript as text source: [###] 標題"
                 for m in re.finditer(r'Adding transcript as text source: (\[\d+\] .+)', output):

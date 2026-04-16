@@ -501,6 +501,24 @@ def sanitize_folder_name(title: str) -> str:
     return result
 
 
+def extract_notebook_id(value: str) -> str | None:
+    """Extract notebook UUID from a NotebookLM URL or a bare UUID.
+
+    Accepts:
+    - https://notebooklm.google.com/notebook/<uuid>[/...]
+    - <uuid>
+    Returns lowercased UUID string, or None if no match.
+    """
+    uuid_pat = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    s = value.strip()
+    if re.fullmatch(uuid_pat, s, re.IGNORECASE):
+        return s.lower()
+    m = re.search(r'/notebook/(' + uuid_pat + r')', s, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    return None
+
+
 def find_or_create_notebook(playlist_title: str) -> str:
     """Find an existing notebook matching playlist_title, or create a new one.
     Returns notebook_id. Also runs 'notebooklm use <id>' to select it."""
@@ -558,9 +576,93 @@ def find_or_create_notebook(playlist_title: str) -> str:
     return nb_id
 
 
-def auto_setup(url: str):
+def bind_existing_folder(nb_id: str):
+    """Bind current working directory to a notebook.
+    Ensures .notebooklm/ exists with fresh auth, then runs `notebooklm use <nb_id>`.
+    Exits on failure."""
+    notebooklm_dir = Path(".notebooklm")
+    notebooklm_dir.mkdir(exist_ok=True)
+    storage_src = Path.home() / ".notebooklm" / "storage_state.json"
+    storage_dst = notebooklm_dir / "storage_state.json"
+    if not storage_dst.exists():
+        if not storage_src.exists():
+            print(f"Error: Auth file not found: {storage_src}", file=sys.stderr)
+            print("Run 'notebooklm login' first to authenticate.", file=sys.stderr)
+            sys.exit(1)
+        shutil.copy2(storage_src, storage_dst)
+        print(f"  Copied auth to .notebooklm/")
+    elif storage_src.exists() and storage_src.stat().st_mtime > storage_dst.stat().st_mtime:
+        shutil.copy2(storage_src, storage_dst)
+        print(f"  Auth refreshed from {storage_src}")
+    os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
+    success, _ = run_command(["notebooklm", "use", nb_id])
+    if not success:
+        print(f"Error: Failed to select notebook {nb_id}", file=sys.stderr)
+        print("Check the notebook URL and that you're authenticated.", file=sys.stderr)
+        sys.exit(1)
+    print(f"  Bound {Path.cwd()} → notebook {nb_id}")
+
+
+def standardize_folder_and_notebook(playlist_title: str):
+    """Rename current folder and bound notebook to the project's standard names.
+    - Folder → sanitize_folder_name(playlist_title)
+    - Notebook → 'Joshua_<playlist_title>'
+    No-ops when names already match. Chdir follows the folder rename."""
+    standard_folder = sanitize_folder_name(playlist_title)
+    standard_notebook = f"Joshua_{playlist_title}"
+
+    cwd = Path.cwd()
+    if cwd.name != standard_folder:
+        new_path = cwd.parent / standard_folder
+        if new_path.exists():
+            print(f"  Folder rename skipped: {new_path} already exists")
+        else:
+            try:
+                os.rename(cwd, new_path)
+                os.chdir(new_path)
+                print(f"  Folder renamed: {cwd.name} → {standard_folder}")
+            except OSError as e:
+                print(f"  Folder rename failed: {e}")
+    else:
+        print(f"  Folder name already standard: {standard_folder}")
+
+    is_selected, _nb_id, current_title = check_notebook_selected()
+    if not is_selected:
+        print(f"  Notebook rename skipped: no notebook selected")
+    elif current_title != standard_notebook:
+        success, _ = run_command(["notebooklm", "rename", standard_notebook])
+        if success:
+            print(f"  Notebook renamed: {current_title} → {standard_notebook}")
+        else:
+            print(f"  Notebook rename failed (current: {current_title})")
+    else:
+        print(f"  Notebook title already standard: {standard_notebook}")
+
+
+def classify_setup_arg(arg: str) -> tuple[str, str]:
+    """Classify a --setup/--auto positional arg.
+
+    Returns (kind, value):
+    - ('notebook', uuid) — NotebookLM notebook URL or bare UUID
+    - ('playlist', url) — YouTube playlist/watch URL
+    - ('path', resolved_path) — existing directory
+    - ('unknown', arg) — none of the above
+    """
+    nb_id = extract_notebook_id(arg)
+    if nb_id:
+        return ('notebook', nb_id)
+    if 'youtube.com' in arg or 'youtu.be' in arg:
+        return ('playlist', arg)
+    p = Path(arg)
+    if p.is_dir():
+        return ('path', str(p.resolve()))
+    return ('unknown', arg)
+
+
+def auto_setup(url: str, notebook_url: str | None = None):
     """Set up folder, auth, and notebook for a playlist URL.
-    After this, cwd is the new subfolder with .notebooklm/ configured and notebook selected."""
+    After this, cwd is the new subfolder with .notebooklm/ configured and notebook selected.
+    If notebook_url is provided, bind to that notebook instead of find/create."""
     # 1. Get playlist title
     print("Getting playlist title...")
     playlist_title = get_playlist_title(url)
@@ -592,10 +694,24 @@ def auto_setup(url: str):
         print(f"  Auth already exists (up to date)")
     os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
 
-    # 4. Find or create notebook
+    # 4. Bind to given notebook, or find/create by title
     print("Setting up notebook...")
-    nb_id = find_or_create_notebook(playlist_title)
-    print(f"  Notebook ID: {nb_id[:8]}...")
+    if notebook_url:
+        nb_id = extract_notebook_id(notebook_url)
+        if not nb_id:
+            print(f"Error: Invalid notebook URL/UUID: {notebook_url}", file=sys.stderr)
+            sys.exit(1)
+        success, _ = run_command(["notebooklm", "use", nb_id])
+        if not success:
+            print(f"Error: Failed to select notebook {nb_id}", file=sys.stderr)
+            print("Check the notebook URL and that you're authenticated.", file=sys.stderr)
+            sys.exit(1)
+        print(f"  Bound to notebook: {nb_id}")
+        print("Standardizing names...")
+        standardize_folder_and_notebook(playlist_title)
+    else:
+        nb_id = find_or_create_notebook(playlist_title)
+        print(f"  Notebook ID: {nb_id[:8]}...")
     print(f"  Working directory: {os.getcwd()}")
     print()
 
@@ -1266,7 +1382,7 @@ def whisper_via_sshfs(
 
     # Run whisper via SSH - output streams directly to terminal
     ssh_cmd = [
-        "ssh", f"{ssh_user}@{ssh_host}",
+        "ssh", "-p", "22", f"{ssh_user}@{ssh_host}",
         "whisper",
         remote_mp3_path,
         "--language", "Chinese",
@@ -1368,14 +1484,14 @@ def whisper_via_ssh(
     # Step 1: Check if txt already exists on remote
     print(f"  SSH: Checking for existing files on {ssh_host}...")
     check_result = sp.run(
-        ["ssh", f"{ssh_user}@{ssh_host}", f"test -f '{remote_txt}' && echo EXISTS"],
+        ["ssh", "-p", "22", f"{ssh_user}@{ssh_host}", f"test -f '{remote_txt}' && echo EXISTS"],
         capture_output=True, text=True
     )
     if "EXISTS" in check_result.stdout:
         print(f"  SSH: Found existing transcript on remote, copying...")
         # scp txt back to local
         scp_result = sp.run(
-            ["scp", f"{ssh_user}@{ssh_host}:{remote_txt}", str(local_txt)],
+            ["scp", "-P", "22", f"{ssh_user}@{ssh_host}:{remote_txt}", str(local_txt)],
             capture_output=True, text=True
         )
         if scp_result.returncode == 0:
@@ -1407,7 +1523,7 @@ def whisper_via_ssh(
     # Check remote if not found locally
     if actual_mp3 is None:
         check_mp3 = sp.run(
-            ["ssh", f"{ssh_user}@{ssh_host}", f"test -f '{remote_mp3}' && echo EXISTS"],
+            ["ssh", "-p", "22", f"{ssh_user}@{ssh_host}", f"test -f '{remote_mp3}' && echo EXISTS"],
             capture_output=True, text=True
         )
         if "EXISTS" in check_mp3.stdout:
@@ -1467,7 +1583,7 @@ def whisper_via_ssh(
         for attempt in range(1, max_retries + 1):
             print(f"  SSH: Uploading {actual_mp3.name} to {ssh_host}..." + (f" (attempt {attempt})" if attempt > 1 else ""))
             scp_up = sp.run(
-                ["scp", str(actual_mp3), f"{ssh_user}@{ssh_host}:{remote_mp3}"],
+                ["scp", "-P", "22", str(actual_mp3), f"{ssh_user}@{ssh_host}:{remote_mp3}"],
                 capture_output=True, text=True
             )
             if scp_up.returncode == 0:
@@ -1486,7 +1602,7 @@ def whisper_via_ssh(
     # Kill any existing whisper processes to free GPU memory (with retry)
     for attempt in range(1, 4):
         kill_result = sp.run(
-            ["ssh", f"{ssh_user}@{ssh_host}", "pkill -f '/usr/local/bin/whisper' 2>/dev/null; sleep 1"],
+            ["ssh", "-p", "22", f"{ssh_user}@{ssh_host}", "pkill -f '/usr/local/bin/whisper' 2>/dev/null; sleep 1"],
             capture_output=True
         )
         if kill_result.returncode == 0 or kill_result.returncode == 1:  # 1 = no process found (ok)
@@ -1510,7 +1626,7 @@ def whisper_via_ssh(
     for attempt in range(1, max_retries + 1):
         print(f"  SSH: Transcribing on {ssh_host}..." + (f" (attempt {attempt})" if attempt > 1 else ""))
         whisper_result = sp.run(
-            ["ssh", "-t", f"{ssh_user}@{ssh_host}", whisper_cmd]
+            ["ssh", "-p", "22", "-t", f"{ssh_user}@{ssh_host}", whisper_cmd]
         )  # No capture - streams to terminal
 
         if whisper_result.returncode == 0:
@@ -1527,7 +1643,7 @@ def whisper_via_ssh(
     for attempt in range(1, max_retries + 1):
         print(f"  SSH: Copying transcript to local..." + (f" (attempt {attempt})" if attempt > 1 else ""))
         scp_result = sp.run(
-            ["scp", f"{ssh_user}@{ssh_host}:{remote_txt}", str(local_txt)],
+            ["scp", "-P", "22", f"{ssh_user}@{ssh_host}:{remote_txt}", str(local_txt)],
             capture_output=True, text=True
         )
         if scp_result.returncode == 0:
@@ -1550,7 +1666,7 @@ def whisper_via_ssh(
     # Step 6: Delete remote mp3 and txt
     print(f"  SSH: Cleaning up remote files...")
     sp.run(
-        ["ssh", f"{ssh_user}@{ssh_host}", f"rm -f '{remote_mp3}' '{remote_txt}'"],
+        ["ssh", "-p", "22", f"{ssh_user}@{ssh_host}", f"rm -f '{remote_mp3}' '{remote_txt}'"],
         capture_output=True
     )
 
@@ -2242,12 +2358,29 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
                 # YouTube direct rename line (upload flow, line ~3276):
                 #   "        → [###] 標題"  (8-space indent, arrow at start)
                 # Reindex lines use "  old_label → [###] ..." (2-space indent, old_label before arrow) — excluded.
+                # Walk lines sequentially so we can tag whisper titles with the
+                # location where transcription actually ran (Colab/SSHFS/SSH/local).
+                # "Trying whisper fallback (X)" sets intent; "WHISPER: Done (local)"
+                # overrides it when Colab/SSH fell back to local whisper.
                 new_titles = []
-                for m in re.finditer(r'^ {8}→ (\[\d+\] .+)$', output, re.MULTILINE):
-                    new_titles.append(m.group(1))
-                # Whisper: "Adding transcript as text source: [###] 標題"
-                for m in re.finditer(r'Adding transcript as text source: (\[\d+\] .+)', output):
-                    new_titles.append(m.group(1))
+                last_whisper_loc: str | None = None
+                for line in output.splitlines():
+                    m = re.match(r'^  Trying whisper fallback \(([^)]+)\)', line)
+                    if m:
+                        last_whisper_loc = m.group(1)
+                        continue
+                    if re.match(r'^  WHISPER: Done in \S+ \(local\)', line):
+                        last_whisper_loc = 'local'
+                        continue
+                    m = re.match(r'^ {8}→ (\[\d+\] .+)$', line)
+                    if m:
+                        new_titles.append(f"[YT]              {m.group(1)}")
+                        continue
+                    m = re.match(r'^  Adding transcript as text source: (\[\d+\] .+)$', line)
+                    if m:
+                        loc = last_whisper_loc or '?'
+                        new_titles.append(f"[Whisper@{loc:<8}] {m.group(1)}")
+                        last_whisper_loc = None
                 updated_details.append((str(rel_path), new_titles))
             else:
                 if not stream_output:
@@ -2482,7 +2615,7 @@ def mount_sshfs(user: str, host: str, remote_path: str, mount_point: Path, max_r
 
         try:
             result = sp.run(
-                ["sshfs", sshfs_target, str(mount_point), "-o", "reconnect,ServerAliveInterval=15"],
+                ["sshfs", sshfs_target, str(mount_point), "-o", "port=22,reconnect,ServerAliveInterval=15"],
                 capture_output=True,
                 text=True
             )
@@ -2692,6 +2825,18 @@ Examples:
         help="Full auto: create folder, find/create notebook, index, reindex, and upload"
     )
     parser.add_argument(
+        "--notebook-url",
+        type=str,
+        nargs='+',
+        metavar="URL_OR_PATH",
+        dest="notebook_url",
+        help="Bind folder to a specific NotebookLM notebook. "
+             "Accepts: notebook URL (https://notebooklm.google.com/notebook/<uuid>), "
+             "bare UUID, and optionally a folder path (in any order, space or comma separated). "
+             "Standalone: rebind cwd (or given path) and exit. "
+             "With --setup/--auto: skip find/create and bind to this notebook."
+    )
+    parser.add_argument(
         "--text-back-to-video-effort",
         type=str,
         nargs='?',
@@ -2797,31 +2942,105 @@ def main():
     # Extract URL from positional args (first positional arg when not --update)
     args.url = args.positional_args[0] if args.positional_args else None
 
-    # --setup / --auto: create folder, auth, notebook
-    if args.setup or args.auto:
-        if not args.url:
-            print(f"Error: --{'setup' if args.setup else 'auto'} requires a playlist URL", file=sys.stderr)
-            sys.exit(1)
-        auto_setup(args.url)
-        if args.setup:
-            # Also create index.list so --update can find this folder later
-            pid = extract_playlist_id(args.url)
-            purl = build_playlist_url(pid)
-            idx_file = Path("index.list")
-            if not idx_file.exists():
-                print("Creating index.list...")
-                video_data = get_playlist_videos(purl)
-                if video_data:
-                    sorted_data = sort_videos_by_date(video_data, reverse=False)
-                    write_index_list(sorted_data, purl, idx_file)
-                    print(f"  Written {len(sorted_data)} videos to index.list")
-                else:
-                    print("Warning: No videos found, index.list not created.", file=sys.stderr)
+    # --setup / --auto / standalone --notebook-url: classify args
+    setup_mode = args.setup or args.auto or args.notebook_url
+    if setup_mode:
+        # Collect all tokens from positional args AND --notebook-url values,
+        # splitting each on commas. Then classify each.
+        all_tokens: list[str] = []
+        for raw in list(args.positional_args) + list(args.notebook_url or []):
+            for piece in raw.split(','):
+                piece = piece.strip()
+                if piece:
+                    all_tokens.append(piece)
+
+        nb_id: str | None = None
+        playlist_url: str | None = None
+        target_path: str | None = None
+        for tok in all_tokens:
+            kind, value = classify_setup_arg(tok)
+            if kind == 'notebook':
+                if nb_id and nb_id != value:
+                    print(f"Error: multiple notebook URLs/UUIDs given", file=sys.stderr)
+                    sys.exit(1)
+                nb_id = value
+            elif kind == 'playlist':
+                if playlist_url and playlist_url != value:
+                    print(f"Error: multiple playlist URLs given", file=sys.stderr)
+                    sys.exit(1)
+                playlist_url = value
+            elif kind == 'path':
+                if target_path and target_path != value:
+                    print(f"Error: multiple folder paths given", file=sys.stderr)
+                    sys.exit(1)
+                target_path = value
             else:
-                print(f"  index.list already exists")
-            print("Setup complete. You can now cd into the folder and run the script.")
-            sys.exit(0)
-        # --auto continues with index + reindex + upload
+                print(f"Error: Unrecognized argument: {tok!r}", file=sys.stderr)
+                print("Expected: YouTube playlist URL, NotebookLM notebook URL/UUID, or existing directory path.", file=sys.stderr)
+                sys.exit(1)
+
+        # If --notebook-url was given, require that at least one of its values was a notebook
+        if args.notebook_url and not nb_id:
+            print(f"Error: --notebook-url got no valid notebook URL/UUID: {args.notebook_url}", file=sys.stderr)
+            sys.exit(1)
+
+        # Path arg implies binding an existing folder at that path
+        if target_path:
+            if not nb_id:
+                print(f"Error: <path> given without a notebook URL (can't know which notebook)", file=sys.stderr)
+                sys.exit(1)
+            os.chdir(target_path)
+
+        # Bind-existing-folder mode: notebook URL + existing index.list (from --setup, --auto, or standalone)
+        bind_existing = nb_id is not None and not playlist_url and Path("index.list").exists()
+
+        if bind_existing:
+            idx_file = Path("index.list")
+            playlist_url = read_playlist_url_from_index(idx_file)
+            print(f"Binding existing folder: {Path.cwd()}")
+            print(f"  Playlist (from index.list): {playlist_url}")
+            bind_existing_folder(nb_id)
+            print("Standardizing names...")
+            playlist_title = get_playlist_title(playlist_url)
+            standardize_folder_and_notebook(playlist_title)
+            args.url = playlist_url
+            if not args.auto:
+                print("Bind complete. Run with --reindex to rename sources, -r to resume uploads.")
+                sys.exit(0)
+            # --auto continues into the upload pipeline below
+        elif args.setup or args.auto:
+            # Classic flow: need a playlist URL, creates new folder from playlist title
+            if not playlist_url:
+                if nb_id and not Path("index.list").exists():
+                    print(f"Error: notebook URL given but no index.list in cwd and no playlist URL.", file=sys.stderr)
+                    print("Provide a playlist URL, or cd into a folder with index.list, or pass a <path>.", file=sys.stderr)
+                else:
+                    print(f"Error: --{'setup' if args.setup else 'auto'} requires a playlist URL", file=sys.stderr)
+                sys.exit(1)
+            auto_setup(playlist_url, notebook_url=nb_id)
+            args.url = playlist_url
+            if args.setup:
+                pid = extract_playlist_id(playlist_url)
+                purl = build_playlist_url(pid)
+                idx_file = Path("index.list")
+                if not idx_file.exists():
+                    print("Creating index.list...")
+                    video_data = get_playlist_videos(purl)
+                    if video_data:
+                        sorted_data = sort_videos_by_date(video_data, reverse=False)
+                        write_index_list(sorted_data, purl, idx_file)
+                        print(f"  Written {len(sorted_data)} videos to index.list")
+                    else:
+                        print("Warning: No videos found, index.list not created.", file=sys.stderr)
+                else:
+                    print(f"  index.list already exists")
+                print("Setup complete. You can now cd into the folder and run the script.")
+                sys.exit(0)
+            # --auto continues with index + reindex + upload
+        else:
+            # Standalone --notebook-url with no existing index.list
+            print(f"Error: --notebook-url requires either an existing index.list in cwd, or a <path> with index.list.", file=sys.stderr)
+            sys.exit(1)
     else:
         # Check for local .notebooklm directory (project-local config)
         local_notebooklm = Path(".notebooklm")

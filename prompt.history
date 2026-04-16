@@ -41,3 +41,65 @@ Fix:
 - Genuine YouTube upload rename (line ~3276) uses 8-space indent with arrow at start of line
 - Reindex lines all use 2-space indent with `old_label → ...` (text before arrow) → now excluded
 - Whisper detection unchanged (distinct `Adding transcript as text source:` marker)
+
+## 3. [2026-04-17] Fix SSH port 22 for genesis + --notebook-url takeover of manually-imported notebooks
+
+Two unrelated issues bundled into one session.
+
+### 3a. SSH port 22 fix
+User noticed `--remote-sshfs` whisper fallback was failing with `Connection refused` on port 22922 even though genesis listens on 22.
+
+Prompt:
+- "still using port 22922?" — pointing at repeated SSH upload failures in the trace
+
+Root cause:
+- User had previously edited local `/etc/services` to rename ssh → 22922 for security
+- That changes what `ssh`/`scp`/`sshfs` resolve to when no `-p`/`-P`/`-o port=` is given
+- Genesis itself still listens on 22, so every default-port outbound call was dead on arrival
+
+Fix:
+- Added explicit port flags to all 9 ssh/scp/sshfs invocations in `whisper_via_sshfs()`, `whisper_via_ssh()`, and `mount_sshfs()`:
+  - `ssh -p 22 …`
+  - `scp -P 22 …`
+  - `sshfs … -o port=22,reconnect,ServerAliveInterval=15`
+
+### 3b. Take over manually-imported notebooks with --notebook-url / --setup
+User often creates notebooks via YouTube's "Import to NotebookLM" button, then wants the script to take over (rename to `[001]` format, whisper-fill failed videos, etc.). Previously the script could only find-or-create by title, which misses manually-created notebooks with non-standard titles.
+
+Prompts:
+- "on --setup (meaning it is not finished), could I manually change which notebook url of a folder pointing to? ... 我只是手動創建 notebook by youtube's 'import into notebooklm', then I want to make you take over the rest manipulation."
+- "I prefer a 3rd solution, since I've created that notebook, the easiest way is it's notebook url. could I give you a notebook url, and you know what rest to take over?"
+- "how about --setup url (url of a youtube playlist or url of a notebook?)"
+- "but if I already in pwd of that implicit folder/notebook, it's index.list has the information (playlist url)"
+- "case 3 may be pwd (./index.list) or a path as 2nd argument (notebookurl, path; notebookurl path; path, notebookurl; path notebookurl) this way, not pwd, but path is the folder having path/index.list for us."
+- "and with 2 arguments, space or comma must be toleranced."
+- "and the bind manually case, usually the folder name, the notebook name are not standardized, we need to perform the rename (Joshua_, no space,etc)"
+- "--notebook-url only accept one argument notebook-url? or can take 2nd path of the book folder? and no order (who is in front)"
+
+Design:
+- `extract_notebook_id(url_or_uuid)` — parses `https://notebooklm.google.com/notebook/<uuid>[/...]` or a bare UUID
+- `classify_setup_arg(arg)` — returns `('notebook', uuid) | ('playlist', url) | ('path', resolved) | ('unknown', arg)`
+- `--notebook-url` flag: `nargs='+'`, accepts 1-2 values (URL + optional path, any order, space or comma separated)
+- Positional args for `--setup`/`--auto` use the same classification
+- Both pools are merged and each token is split on commas, then classified and deduplicated
+- `bind_existing_folder(nb_id)` — sets up `.notebooklm/` auth + `notebooklm use <id>` in current cwd
+- `standardize_folder_and_notebook(playlist_title)` — renames cwd to `sanitize_folder_name(title)` (os.rename + chdir) and renames bound notebook to `Joshua_<title>` via `notebooklm rename`; no-ops when already standard; skipped if target path exists
+- Called automatically whenever `notebook_url` is bound (both classic `auto_setup` with `--notebook-url`, and the bind-existing-folder path)
+
+Supported invocation forms (all equivalent, order-agnostic):
+```
+--setup <playlist_url> <notebook_url>
+--setup <notebook_url> <playlist_url>
+--setup "<notebook_url>,<playlist_url>"
+--setup <notebook_url> <path>           # uses <path>/index.list
+--setup <notebook_url>                  # uses ./index.list
+--notebook-url <nb_url>                 # standalone: rebind cwd and exit
+--notebook-url <nb_url> <path>
+--notebook-url "<nb_url>,<path>"
+```
+
+Error cases:
+- Bare path alone → "can't know which notebook"
+- Notebook URL alone with no `index.list` (and no path) → error asking for playlist URL
+- Multiple different notebooks / playlists / paths → error
+- Invalid `--notebook-url` value → error

@@ -406,12 +406,58 @@ def cleanup_stale_locks(lock_file: Path, max_age_hours: int = 4):
     return removed
 
 
-def write_index_list(video_entries: list, playlist_url: str, index_file: Path):
+def read_index_metadata(index_file: Path) -> dict:
+    """Read metadata headers from the top of index.list.
+
+    Recognized header lines (leading '#' + key + ':' + value, whitespace-tolerant):
+      # playlist:         <url>
+      # notebook url:     <url>
+      # notebook title:   <title>
+
+    Reading stops at the first non-'#' line. Returns a dict with keys
+    {'playlist_url', 'notebook_url', 'notebook_title'}, each possibly None.
+    """
+    meta = {'playlist_url': None, 'notebook_url': None, 'notebook_title': None}
+    if not index_file.exists():
+        return meta
+    with open(index_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\n').rstrip('\r')
+            if not line.startswith('#'):
+                break
+            rest = line[1:].strip()
+            if ':' not in rest:
+                continue
+            key, _, value = rest.partition(':')
+            key = key.strip().lower()
+            value = value.strip()
+            if key == 'playlist':
+                meta['playlist_url'] = value
+            elif key == 'notebook url':
+                meta['notebook_url'] = value
+            elif key == 'notebook title':
+                meta['notebook_title'] = value
+    return meta
+
+
+def write_index_list(video_entries: list, playlist_url: str, index_file: Path,
+                     notebook_url: str | None = None,
+                     notebook_title: str | None = None):
     """Write playlist URLs and titles to index.list file.
-    video_entries: list of (url, title) or (url, title, sort_date) tuples."""
+
+    video_entries: list of (url, title) or (url, title, sort_date) tuples.
+    notebook_url / notebook_title: when None, existing values in the file are
+    preserved (never clobbered); pass an explicit value to overwrite.
+    """
+    existing = read_index_metadata(index_file)
+    nb_url = notebook_url if notebook_url is not None else existing['notebook_url']
+    nb_title = notebook_title if notebook_title is not None else existing['notebook_title']
     with open(index_file, 'w', encoding='utf-8') as f:
-        # First line: playlist URL marker
-        f.write(f"# playlist: {playlist_url}\n")
+        f.write(f"# playlist:\t\t{playlist_url}\n")
+        if nb_url:
+            f.write(f"# notebook url:\t\t{nb_url}\n")
+        if nb_title:
+            f.write(f"# notebook title:\t{nb_title}\n")
         for i, entry in enumerate(video_entries, 1):
             url, title = entry[0], entry[1]
             date = entry[2] if len(entry) >= 3 and entry[2] else ""
@@ -421,15 +467,56 @@ def write_index_list(video_entries: list, playlist_url: str, index_file: Path):
                 f.write(f'{i}\t{url}\t"{title}"\n')
 
 
-def read_playlist_url_from_index(index_file: Path) -> str | None:
-    """Read playlist URL from first line of index.list."""
+def update_index_metadata(index_file: Path, *,
+                          notebook_url: str | None = None,
+                          notebook_title: str | None = None):
+    """Update only the notebook_url / notebook_title headers in an existing
+    index.list, preserving all video entries. Either value can be None to
+    leave that field alone."""
     if not index_file.exists():
-        return None
+        return
+    # Separate header lines from body lines
     with open(index_file, 'r', encoding='utf-8') as f:
-        first_line = f.readline().strip()
-        if first_line.startswith("# playlist:"):
-            return first_line.split("# playlist:", 1)[1].strip()
-    return None
+        lines = f.readlines()
+    body_start = 0
+    for i, line in enumerate(lines):
+        if not line.startswith('#'):
+            body_start = i
+            break
+    else:
+        body_start = len(lines)
+    body = lines[body_start:]
+    meta = read_index_metadata(index_file)
+    playlist_url = meta['playlist_url'] or ''
+    nb_url = notebook_url if notebook_url is not None else meta['notebook_url']
+    nb_title = notebook_title if notebook_title is not None else meta['notebook_title']
+    with open(index_file, 'w', encoding='utf-8') as f:
+        if playlist_url:
+            f.write(f"# playlist:\t\t{playlist_url}\n")
+        if nb_url:
+            f.write(f"# notebook url:\t\t{nb_url}\n")
+        if nb_title:
+            f.write(f"# notebook title:\t{nb_title}\n")
+        f.writelines(body)
+
+
+def read_playlist_url_from_index(index_file: Path) -> str | None:
+    """Read playlist URL from index.list metadata headers."""
+    return read_index_metadata(index_file).get('playlist_url')
+
+
+def derive_folder_name(notebook_title: str) -> str:
+    """Derive a filesystem folder name from a notebook title.
+
+    Strips the project's standardization prefix (Joshua_ / Joshua space / Joshua),
+    then runs sanitize_folder_name to produce a shell-safe directory name.
+    """
+    title = notebook_title
+    for prefix in ("Joshua_", "Joshua ", "Joshua"):
+        if title.startswith(prefix):
+            title = title[len(prefix):]
+            break
+    return sanitize_folder_name(title.strip())
 
 
 def load_ok_urls(ok_file: Path) -> set[str]:
@@ -499,6 +586,47 @@ def sanitize_folder_name(title: str) -> str:
     result = re.sub(r'_+', '_', result)
     result = result.strip('_')
     return result
+
+
+def build_notebook_url(nb_id: str) -> str:
+    """Build a full NotebookLM URL from a notebook UUID."""
+    return f"https://notebooklm.google.com/notebook/{nb_id}"
+
+
+def backfill_index_metadata(index_file: Path) -> bool:
+    """Append missing line-2 (notebook url) and line-3 (notebook title) headers
+    to a legacy index.list, using the currently-bound notebook.
+
+    - Line 2 (notebook url): filled from `notebooklm status` current binding.
+    - Line 3 (notebook title): filled from the current cloud title as a safe
+      preservation default. Subsequent standardize calls (in --setup/--auto/bind)
+      may later enforce `Joshua_<playlist_title>` per the project convention.
+
+    Does not rename anything. Returns True if any header was added.
+    """
+    if not index_file.exists():
+        return False
+    meta = read_index_metadata(index_file)
+    if meta.get('notebook_url') and meta.get('notebook_title'):
+        return False
+    is_selected, nb_id, cloud_title = check_notebook_selected()
+    if not is_selected:
+        return False
+    updates = {}
+    if not meta.get('notebook_url') and nb_id:
+        updates['notebook_url'] = build_notebook_url(nb_id)
+    if not meta.get('notebook_title') and cloud_title:
+        updates['notebook_title'] = cloud_title
+    if not updates:
+        return False
+    update_index_metadata(index_file, **updates)
+    added = []
+    if 'notebook_url' in updates:
+        added.append("line 2 (notebook url)")
+    if 'notebook_title' in updates:
+        added.append(f"line 3 (notebook title: {updates['notebook_title']})")
+    print(f"  Backfilled index.list: {', '.join(added)}")
+    return True
 
 
 def extract_notebook_id(value: str) -> str | None:
@@ -603,40 +731,79 @@ def bind_existing_folder(nb_id: str):
     print(f"  Bound {Path.cwd()} → notebook {nb_id}")
 
 
-def standardize_folder_and_notebook(playlist_title: str):
-    """Rename current folder and bound notebook to the project's standard names.
-    - Folder → sanitize_folder_name(playlist_title)
-    - Notebook → 'Joshua_<playlist_title>'
-    No-ops when names already match. Chdir follows the folder rename."""
-    standard_folder = sanitize_folder_name(playlist_title)
-    standard_notebook = f"Joshua_{playlist_title}"
+def standardize_folder_and_notebook(playlist_title: str,
+                                    index_file: Path | None = None):
+    """Enforce notebook title + folder name per the project convention.
 
+    Priority order for the notebook title:
+      1. `index.list` line 3 (`# notebook title: …`)   — user-edited wins
+      2. `Joshua_<playlist_title>`                      — the default standard
+      (The notebook's current cloud title is *not* used as a source of truth;
+       it gets overwritten to match the chosen target.)
+
+    The folder name is derived from the chosen title via derive_folder_name()
+    (strips `Joshua_` prefix + sanitizes), so a custom line-3 title drags the
+    folder name along with it.
+
+    Side effects:
+      - If index_file is given and has no line 3, writes `Joshua_<title>` into it.
+      - Renames the cloud notebook if it differs from the target title.
+      - Renames the cwd if it differs from the derived folder name (chdir follows).
+    """
+    meta = read_index_metadata(index_file) if index_file else {
+        'notebook_url': None, 'notebook_title': None, 'playlist_url': None
+    }
+    default_title = f"Joshua_{playlist_title}"
+    target_title = meta.get('notebook_title') or default_title
+    seeded_default_title = False
+    seeded_notebook_url = False
+    is_selected, current_nb_id, current_title = check_notebook_selected()
+
+    # Backfill legacy index.list: line 2 (notebook url) missing → seed from current binding
+    if index_file is not None and not meta.get('notebook_url') and is_selected and current_nb_id:
+        update_index_metadata(index_file, notebook_url=build_notebook_url(current_nb_id))
+        seeded_notebook_url = True
+
+    if index_file is not None and not meta.get('notebook_title'):
+        # First time: seed line 3 with the default so later runs see it
+        update_index_metadata(index_file, notebook_title=default_title)
+        seeded_default_title = True
+
+    target_folder = derive_folder_name(target_title)
+
+    # --- Notebook rename (cloud) ---
+    if not is_selected:
+        print(f"  Notebook rename skipped: no notebook selected")
+    elif current_title != target_title:
+        success, _ = run_command(["notebooklm", "rename", target_title])
+        if success:
+            print(f"  Notebook renamed: {current_title} → {target_title}")
+        else:
+            print(f"  Notebook rename failed (current: {current_title})")
+    else:
+        print(f"  Notebook title already: {target_title}")
+
+    # --- Folder rename (disk) ---
     cwd = Path.cwd()
-    if cwd.name != standard_folder:
-        new_path = cwd.parent / standard_folder
+    if cwd.name != target_folder:
+        new_path = cwd.parent / target_folder
         if new_path.exists():
             print(f"  Folder rename skipped: {new_path} already exists")
         else:
             try:
                 os.rename(cwd, new_path)
                 os.chdir(new_path)
-                print(f"  Folder renamed: {cwd.name} → {standard_folder}")
+                print(f"  Folder renamed: {cwd.name} → {target_folder}")
             except OSError as e:
                 print(f"  Folder rename failed: {e}")
     else:
-        print(f"  Folder name already standard: {standard_folder}")
+        print(f"  Folder name already: {target_folder}")
 
-    is_selected, _nb_id, current_title = check_notebook_selected()
-    if not is_selected:
-        print(f"  Notebook rename skipped: no notebook selected")
-    elif current_title != standard_notebook:
-        success, _ = run_command(["notebooklm", "rename", standard_notebook])
-        if success:
-            print(f"  Notebook renamed: {current_title} → {standard_notebook}")
-        else:
-            print(f"  Notebook rename failed (current: {current_title})")
-    else:
-        print(f"  Notebook title already standard: {standard_notebook}")
+    if seeded_notebook_url:
+        print(f"  Seeded index.list line 2 with current notebook URL.")
+    if seeded_default_title:
+        print(f"  Seeded index.list line 3 with '{default_title}' "
+              f"(edit this line to customize; folder name will follow).")
 
 
 def classify_setup_arg(arg: str) -> tuple[str, str]:
@@ -659,20 +826,41 @@ def classify_setup_arg(arg: str) -> tuple[str, str]:
     return ('unknown', arg)
 
 
-def auto_setup(url: str, notebook_url: str | None = None):
+def auto_setup(url: str, notebook_url: str | None = None) -> str:
     """Set up folder, auth, and notebook for a playlist URL.
     After this, cwd is the new subfolder with .notebooklm/ configured and notebook selected.
-    If notebook_url is provided, bind to that notebook instead of find/create."""
+    If notebook_url is provided, bind to that notebook instead of find/create.
+    Returns the bound notebook's UUID.
+
+    In-place mode: if cwd already has an `index.list` whose playlist ID matches
+    the given url, skip folder creation/chdir and use cwd as-is. This lets
+    custom-renamed folders (from line-3 edits) keep working across reruns.
+    """
     # 1. Get playlist title
     print("Getting playlist title...")
     playlist_title = get_playlist_title(url)
     print(f"  Playlist: {playlist_title}")
 
-    # 2. Create subfolder
-    folder_name = sanitize_folder_name(playlist_title)
-    print(f"  Folder: {folder_name}/")
-    os.makedirs(folder_name, exist_ok=True)
-    os.chdir(folder_name)
+    # Detect in-place: cwd already a playlist folder for this url
+    in_place = False
+    cwd_idx = Path.cwd() / "index.list"
+    if cwd_idx.exists():
+        existing_url = read_playlist_url_from_index(cwd_idx)
+        if existing_url:
+            try:
+                if extract_playlist_id(existing_url) == extract_playlist_id(url):
+                    in_place = True
+            except SystemExit:
+                pass
+
+    if in_place:
+        print(f"  In-place: reusing existing folder {Path.cwd().name}/")
+    else:
+        # 2. Create subfolder
+        folder_name = sanitize_folder_name(playlist_title)
+        print(f"  Folder: {folder_name}/")
+        os.makedirs(folder_name, exist_ok=True)
+        os.chdir(folder_name)
 
     # 3. Setup .notebooklm/ auth
     notebooklm_dir = Path(".notebooklm")
@@ -707,13 +895,12 @@ def auto_setup(url: str, notebook_url: str | None = None):
             print("Check the notebook URL and that you're authenticated.", file=sys.stderr)
             sys.exit(1)
         print(f"  Bound to notebook: {nb_id}")
-        print("Standardizing names...")
-        standardize_folder_and_notebook(playlist_title)
     else:
         nb_id = find_or_create_notebook(playlist_title)
         print(f"  Notebook ID: {nb_id[:8]}...")
     print(f"  Working directory: {os.getcwd()}")
     print()
+    return nb_id
 
 
 def extract_date_from_title(title: str) -> str | None:
@@ -1944,6 +2131,65 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dic
     return rename_plan, unmapped
 
 
+def sync_tracking_from_notebook(playlist_url: str, index_file: Path,
+                                ok_file: Path, video2txt_file: Path,
+                                cleanup_errors: bool = True) -> tuple[int, int, int]:
+    """Scan the currently-bound notebook and record sources already present in
+    index.list into the tracking files, so subsequent -r runs skip them.
+
+    Matches native YouTube sources by URL and whisper text sources by the
+    `#URL <url>` first line (via _match_sources_by_title). Does NOT rename.
+
+    Returns (ok_count, v2t_count, remaining_count).
+    """
+    is_selected, _, _ = check_notebook_selected()
+    if not is_selected:
+        print("Error: No notebook selected.", file=sys.stderr)
+        sys.exit(1)
+
+    if cleanup_errors:
+        cleanup_error_sources()
+
+    new_map = {}
+    with open(index_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    new_idx = int(parts[0])
+                    url = parts[1]
+                    title = parts[2].strip('"') if len(parts) >= 3 else ""
+                    new_map[url] = (new_idx, title)
+
+    success, output = run_command(
+        ["notebooklm", "source", "list", "--json"],
+        capture_json=True
+    )
+    if not success:
+        print(f"Error: Failed to list sources: {output}", file=sys.stderr)
+        sys.exit(1)
+    sources = output.get("sources", [])
+
+    matched, _unmapped = _match_sources_by_title(sources, playlist_url, new_map)
+    source_types = {s["id"]: s.get("type", "") for s in sources}
+
+    ok_count = 0
+    v2t_count = 0
+    with open(ok_file, 'w', encoding='utf-8') as f_ok, \
+         open(video2txt_file, 'w', encoding='utf-8') as f_v2t:
+        for source_id, _, new_idx, _, url in matched:
+            if source_types.get(source_id) == "text":
+                f_v2t.write(f"{new_idx} {url} 0\n")
+                v2t_count += 1
+            else:
+                f_ok.write(f"{new_idx} {url} 0\n")
+                ok_count += 1
+
+    remaining = len(new_map) - len(matched)
+    return ok_count, v2t_count, remaining
+
+
 def reindex_sources(playlist_url: str,
                     index_file: Path, ok_file: Path, video2txt_file: Path):
     """Rename notebook sources to match current index.list ordering.
@@ -2282,7 +2528,7 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
             try:
                 proc = subprocess.Popen(
                     cmd,
-                    cwd=str(folder_path.parent),
+                    cwd=str(folder_path),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -2310,7 +2556,7 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
             try:
                 result = subprocess.run(
                     cmd,
-                    cwd=str(folder_path.parent),
+                    cwd=str(folder_path),
                     capture_output=True,
                     text=True,
                     timeout=3600,
@@ -3000,12 +3246,30 @@ def main():
             print(f"Binding existing folder: {Path.cwd()}")
             print(f"  Playlist (from index.list): {playlist_url}")
             bind_existing_folder(nb_id)
+            update_index_metadata(idx_file, notebook_url=build_notebook_url(nb_id))
             print("Standardizing names...")
             playlist_title = get_playlist_title(playlist_url)
-            standardize_folder_and_notebook(playlist_title)
+            standardize_folder_and_notebook(playlist_title, index_file=idx_file)
+            # cwd may have changed if the folder was renamed
+            idx_file = Path("index.list")
+            print("Scanning notebook for already-present sources...")
+            ok_file_b = Path("add_source_ok.txt")
+            v2t_file_b = Path("add_source_video2txt.txt")
+            ok_c, v2t_c, remaining_c = sync_tracking_from_notebook(
+                playlist_url, idx_file, ok_file_b, v2t_file_b
+            )
+            total_recorded = ok_c + v2t_c
+            print(f"  Recorded {total_recorded} healthy sources "
+                  f"({ok_c} native, {v2t_c} whisper text); {remaining_c} missing.")
             args.url = playlist_url
             if not args.auto:
-                print("Bind complete. Run with --reindex to rename sources, -r to resume uploads.")
+                if remaining_c == 0:
+                    print("Bind complete. Notebook already fully covered — nothing to do.")
+                    print("Run --reindex to rename sources to [###] format if desired.")
+                else:
+                    print(f"Bind complete. {remaining_c} missing video(s) to upload.")
+                    print(f"  Next: -r (this folder), --update (from parent dir), "
+                          f"or --reindex (rename sources only).")
                 sys.exit(0)
             # --auto continues into the upload pipeline below
         elif args.setup or args.auto:
@@ -3017,23 +3281,31 @@ def main():
                 else:
                     print(f"Error: --{'setup' if args.setup else 'auto'} requires a playlist URL", file=sys.stderr)
                 sys.exit(1)
-            auto_setup(playlist_url, notebook_url=nb_id)
+            bound_nb_id = auto_setup(playlist_url, notebook_url=nb_id)
             args.url = playlist_url
-            if args.setup:
-                pid = extract_playlist_id(playlist_url)
-                purl = build_playlist_url(pid)
-                idx_file = Path("index.list")
-                if not idx_file.exists():
-                    print("Creating index.list...")
-                    video_data = get_playlist_videos(purl)
-                    if video_data:
-                        sorted_data = sort_videos_by_date(video_data, reverse=False)
-                        write_index_list(sorted_data, purl, idx_file)
-                        print(f"  Written {len(sorted_data)} videos to index.list")
-                    else:
-                        print("Warning: No videos found, index.list not created.", file=sys.stderr)
+            pid = extract_playlist_id(playlist_url)
+            purl = build_playlist_url(pid)
+            idx_file = Path("index.list")
+            if not idx_file.exists():
+                print("Creating index.list...")
+                video_data = get_playlist_videos(purl)
+                if video_data:
+                    sorted_data = sort_videos_by_date(video_data, reverse=False)
+                    # Seed line 2 (notebook url) immediately; line 3 is seeded by standardize below.
+                    write_index_list(sorted_data, purl, idx_file,
+                                     notebook_url=build_notebook_url(bound_nb_id))
+                    print(f"  Written {len(sorted_data)} videos to index.list")
                 else:
-                    print(f"  index.list already exists")
+                    print("Warning: No videos found, index.list not created.", file=sys.stderr)
+            else:
+                # Existing file: make sure line 2 reflects what we just bound.
+                update_index_metadata(idx_file, notebook_url=build_notebook_url(bound_nb_id))
+                print(f"  index.list already exists")
+            # Enforce notebook title (line 3 wins; else Joshua_<playlist_title>) + folder name
+            print("Standardizing names...")
+            playlist_title = get_playlist_title(playlist_url)
+            standardize_folder_and_notebook(playlist_title, index_file=idx_file)
+            if args.setup:
                 print("Setup complete. You can now cd into the folder and run the script.")
                 sys.exit(0)
             # --auto continues with index + reindex + upload
@@ -3086,6 +3358,9 @@ def main():
             print("Use 'notebooklm list' to see available notebooks.", file=sys.stderr)
             sys.exit(1)
         print(f"Notebook: {notebook_title} ({notebook_id[:8]}...)")
+        # Upgrade legacy index.list by appending lines 2-3 if missing.
+        if index_file.exists():
+            backfill_index_metadata(index_file)
 
     # --reindex (standalone): rename existing sources to match current index.list, then exit
     if args.reindex and not args.auto:

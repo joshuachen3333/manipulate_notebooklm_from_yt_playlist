@@ -103,3 +103,80 @@ Error cases:
 - Notebook URL alone with no `index.list` (and no path) → error asking for playlist URL
 - Multiple different notebooks / playlists / paths → error
 - Invalid `--notebook-url` value → error
+
+## 4. [2026-04-17] index.list v2: notebook url + title headers, manual-edit priority, folder follows title
+
+Extends the bind-takeover feature from #3 with a persistent, user-editable record in `index.list` itself, plus detection of already-healthy sources so bind doesn't redo completed work.
+
+### 4a. Detect already-imported healthy sources on bind
+Prompt:
+- "can you detect that newly connected notebook might have ok and healthy source already imported, and no need to do anything or transcription even the add_source_ok.txt doesn't know about the real ok list?"
+
+Problem: after a manual YouTube "Import to NotebookLM", the notebook already contains most/all sources, but `add_source_ok.txt` / `add_source_video2txt.txt` are empty, so `-r` would re-add everything.
+
+Fix:
+- New `sync_tracking_from_notebook()` helper extracts the match+write half of `reindex_sources()` (no rename, no prompt)
+- Called automatically at the end of the bind-existing path
+- Cleans error sources first, matches remaining via `_match_sources_by_title` (URL for native YouTube, `#URL` header for whisper text), writes both tracking files
+- Reports `Recorded N healthy sources (X native, Y whisper text); M missing`
+
+### 4b. Bind hint mentions --update
+Prompt:
+- "when --setup notebookurl path, I saw you hint that with --resume -r to go on, add --update (also work) for the hint"
+
+Fix: rewrote the post-bind hint to list `-r`, `--update` (from parent dir), and `--reindex` as the three ways to continue.
+
+### 4c. New index.list spec — lines 2 & 3
+Prompts:
+- "I want to change the spec. in index.list, we add 2nd and 3rd line (align well) ... and this is the default. but sometimes, I will manually edit this file, especially notebook title ... this manual change of index.list notebook title part must be preserved, never lost, and take the highest priority, especially on notebook title naming. Is that possible? any logic problem?"
+- Clarification: "on the first bind, the Joshua_ naming always win, unless there is 3rd line at index.list and that title is something different from the default title (I changed it on purpose). So A, changed 3rd line title always win, B, Joshua_ the default standardized ... 3, is the imported title of the notebook (mostly need to be standardized)"
+- "don't worry about the web UI renaming, it should become back to standardized or the 3rd changed on purpose"
+- "also, the folder name should honor 3rd line renaming. once changed and different from standardized, the folder name follows. But the folder name must not have the Joshua_ part at all."
+- "and for old index.list or first time creation or bind, where did you get 2nd line, the notebook url? some old spec index.list don't have 2nd and 3rd line. append it."
+- "with a --setup notebook-url or --notebook-url url binding, will you overwrite 2nd line url?" — yes, unconditional rebind
+- "the 2nd line need one more tab" — tab alignment fix
+
+New file format:
+```
+# playlist:		<playlist_url>
+# notebook url:		<notebook_url>
+# notebook title:	<notebook_title>
+1	<video_url>	"<title>"	<YYYYMMDD>
+...
+```
+Tabs: 2 tabs after `playlist:` and `notebook url:`, 1 tab after `notebook title:` — aligns values at col 24 (tab stop 3, 8-char tabs).
+
+Priority order for notebook title:
+1. Line 3 (user-edited) always wins
+2. `Joshua_<playlist_title>` default
+3. Cloud / web-UI title — overwritten to match the winner
+
+Folder name = `derive_folder_name(line 3)` = strip `Joshua_` prefix + `sanitize_folder_name`. Folder never carries the `Joshua_` prefix (notebook title does). Folder rename follows line 3 edits on the next `--setup` / `--auto` / `--update` pass.
+
+### 4d. Preservation + backfill
+- `write_index_list(..., notebook_url=None, notebook_title=None)` — when either param is `None`, the existing value in the file is preserved; never clobbered.
+- `update_index_metadata()` — header-only rewrite that keeps the video body intact.
+- `standardize_folder_and_notebook()` seeds missing lines 2 (from current binding) and 3 (`Joshua_<playlist_title>`).
+- `backfill_index_metadata()` — lightweight, called after notebook-selected check in every mode including `-r` / `--reindex`; seeds missing lines 2 (from current binding) and 3 (from cloud title, safe preservation). No renames, no `yt-dlp` call — minimal disruption.
+
+### 4e. --update in-place mode
+Problem: custom folder names (from line 3 edits) broke `run_update`, which launched subprocesses with `cwd=folder_path.parent` + `--auto <url>`, making `auto_setup` create a fresh `sanitize_folder_name(title)` subfolder alongside the renamed one.
+
+Fix:
+- `run_update` now uses `cwd=str(folder_path)` (subprocess starts inside the folder itself)
+- `auto_setup` detects in-place mode — if cwd already has an `index.list` whose playlist ID matches `url`, skip folder creation/chdir entirely
+- Custom-named folders survive indefinite `--update` batch runs
+
+### 4f. Code map
+| Function | Role |
+|---|---|
+| `read_index_metadata(idx)` | Parse `# playlist` / `# notebook url` / `# notebook title` headers |
+| `write_index_list(..., nb_url, nb_title)` | Full rewrite; preserves metadata when params are `None` |
+| `update_index_metadata(idx, …)` | Header-only rewrite |
+| `derive_folder_name(title)` | Strip `Joshua_` + sanitize → folder name |
+| `build_notebook_url(nb_id)` | UUID → full NotebookLM URL |
+| `standardize_folder_and_notebook(title, idx)` | Enforce line 3 on cloud notebook + folder rename |
+| `backfill_index_metadata(idx)` | Lightweight seed for legacy files (no rename) |
+| `sync_tracking_from_notebook(...)` | Record already-imported sources into tracking files |
+
+Spec also written to `INDEX_LIST_SPEC.md` (10 sections, on-disk reference).

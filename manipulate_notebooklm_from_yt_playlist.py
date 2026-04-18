@@ -3870,16 +3870,26 @@ Examples:
         help="Full auto: create folder, find/create notebook, index, reindex, and upload"
     )
     parser.add_argument(
+        "--bind-notebook",
+        type=str,
+        nargs='+',
+        metavar="NOTEBOOK_ID_OR_URL",
+        dest="target_notebook",
+        help="Bind folder to a specific NotebookLM notebook. "
+             "Accepts: notebook URL (https://notebooklm.google.com/notebook/<uuid>) or bare UUID, "
+             "plus an optional folder path (defaults to cwd). "
+             "Standalone: rebind (cwd or given path) and exit. "
+             "With --setup/--auto: skip find/create and bind to this notebook."
+    )
+    # Legacy alias — same behavior, hidden from --help, emits a deprecation
+    # notice to stderr when used. Kept so existing shell aliases keep working.
+    parser.add_argument(
         "--notebook-url",
         type=str,
         nargs='+',
         metavar="URL_OR_PATH",
-        dest="notebook_url",
-        help="Bind folder to a specific NotebookLM notebook. "
-             "Accepts: notebook URL (https://notebooklm.google.com/notebook/<uuid>), "
-             "bare UUID, and optionally a folder path (in any order, space or comma separated). "
-             "Standalone: rebind cwd (or given path) and exit. "
-             "With --setup/--auto: skip find/create and bind to this notebook."
+        dest="notebook_url_legacy",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--add-video",
@@ -4228,13 +4238,29 @@ def main():
     # Extract URL from positional args (first positional arg when not --update)
     args.url = args.positional_args[0] if args.positional_args else None
 
-    # --setup / --auto / standalone --notebook-url: classify args
-    setup_mode = args.setup or args.auto or args.notebook_url
+    # Deprecation: --notebook-url is the legacy alias for --bind-notebook. If the
+    # user supplied only the legacy flag, emit a stderr deprecation notice and
+    # fold its values into target_notebook. If both are given with different
+    # contents, error out.
+    if args.notebook_url_legacy:
+        print("Warning: --notebook-url is deprecated. Use --bind-notebook instead "
+              "(same behavior, clearer name).", file=sys.stderr)
+        if args.target_notebook:
+            # Both given — only allow if they're identical (idempotent).
+            if list(args.target_notebook) != list(args.notebook_url_legacy):
+                print("Error: both --bind-notebook and --notebook-url given with "
+                      "different values. Use only one.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            args.target_notebook = args.notebook_url_legacy
+
+    # --setup / --auto / standalone --bind-notebook: classify args
+    setup_mode = args.setup or args.auto or args.target_notebook
     if setup_mode:
-        # Collect all tokens from positional args AND --notebook-url values,
+        # Collect all tokens from positional args AND --bind-notebook values,
         # splitting each on commas. Then classify each.
         all_tokens: list[str] = []
-        for raw in list(args.positional_args) + list(args.notebook_url or []):
+        for raw in list(args.positional_args) + list(args.target_notebook or []):
             for piece in raw.split(','):
                 piece = piece.strip()
                 if piece:
@@ -4265,9 +4291,10 @@ def main():
                 print("Expected: YouTube playlist URL, NotebookLM notebook URL/UUID, or existing directory path.", file=sys.stderr)
                 sys.exit(1)
 
-        # If --notebook-url was given, require that at least one of its values was a notebook
-        if args.notebook_url and not nb_id:
-            print(f"Error: --notebook-url got no valid notebook URL/UUID: {args.notebook_url}", file=sys.stderr)
+        # If --bind-notebook was given, require that at least one of its values was a notebook
+        if args.target_notebook and not nb_id:
+            print(f"Error: --bind-notebook got no valid notebook URL/UUID: {args.target_notebook}",
+                  file=sys.stderr)
             sys.exit(1)
 
         # Path arg implies binding an existing folder at that path

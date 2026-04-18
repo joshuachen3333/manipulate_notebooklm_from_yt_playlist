@@ -97,6 +97,15 @@ python3 manipulate_notebooklm_from_yt_playlist.py --update --debug      # debug 
 python3 manipulate_notebooklm_from_yt_playlist.py --cleanup             # current dir
 python3 manipulate_notebooklm_from_yt_playlist.py --cleanup /path/to/dir
 
+# Bind an existing folder to a specific NotebookLM notebook (standalone rebind)
+python3 manipulate_notebooklm_from_yt_playlist.py --bind-notebook "https://notebooklm.google.com/notebook/<uuid>"                    # cwd
+python3 manipulate_notebooklm_from_yt_playlist.py --bind-notebook "https://notebooklm.google.com/notebook/<uuid>" /path/to/folder     # explicit folder
+python3 manipulate_notebooklm_from_yt_playlist.py --bind-notebook <bare-uuid>                                                          # UUID alone also OK
+# (Deprecated: --notebook-url is the old name for the same flag; still works with a stderr warning.)
+
+# Combined with --setup to bind to a specific (manually-imported) notebook instead of find/create by title
+python3 manipulate_notebooklm_from_yt_playlist.py --setup "<playlist_url>" --bind-notebook "<notebook_url>"
+
 # Add a single extra video (not from the source playlist) to a notebook folder
 python3 manipulate_notebooklm_from_yt_playlist.py --add-video "https://youtu.be/XYZ"             # cwd
 python3 manipulate_notebooklm_from_yt_playlist.py --add-video "https://youtu.be/XYZ" /path/folder # explicit folder

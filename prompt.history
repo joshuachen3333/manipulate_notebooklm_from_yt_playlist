@@ -581,3 +581,43 @@ Bailed without implementing (returned "let me do it quickly then pause"). Finish
 - "Reject" verdicts from owls are as valuable as "approve" — council 3 actively saved a design regression (was leaning toward accepting the optional path; owls talked me out of it).
 - Using owls for **design** (brainstorming) works as well as for **review** (code critique), though the skill was built for review. Same skill, both modes.
 - Three agents in parallel on the same file still hits the Edit file-modified guard sometimes — not a correctness issue, just extra latency as the losing agent re-reads and re-applies. One agent (Agent 3) bailed mid-work; reasonable fallback is finish inline, which is what I did.
+
+## 13. [2026-04-19] Rename `--notebook-url` → `--bind-notebook` (owls-reviewed)
+
+User noticed `--notebook-url` breaks the tool's verb-first CLI grammar (`--new-notebook`, `--add-video`, `--attach-playlist`) — it describes the argument type instead of the action. Proposed rename to `--bind-to-notebook`. Ran a 3-round owls council on the question.
+
+Prompts:
+- "for --notebook-url, what are the arguments, what are the scenarios? is it ok to rename it to --bind-to-notebook? call 3 owls to work out this."
+- "A please"
+
+### 13a. Owls verdict (3 rounds, converged)
+
+Both owls approved the rename but picked a slightly different name: **`--bind-notebook`** (not `--bind-to-notebook`). Rationale:
+- Shorter, still unambiguous ("bind" is transitive so the "to" is implied).
+- Matches the other verb-noun commands exactly (`--new-notebook`, `--add-video`, `--attach-playlist`).
+- Grammar is active: "bind [this folder to a] notebook."
+- Distinct from `--bind` alone (which would be too generic).
+
+**Alias strategy: deprecation alias**, not clean-break. Existing shell aliases / scripts keep working; the old flag emits a one-line stderr warning.
+
+**Q4 (shape)**: Owls suggested tightening the NEW flag's shape to `--bind-notebook NOTEBOOK_ID [PATH]` and keeping the legacy magic-classifier parsing only on the deprecated alias. I adopted the dest rename (`notebook_url` → `target_notebook`) and the deprecation alias but kept both flags using the same `nargs='+'` classifier pipeline — tightening would have meant forking the dispatcher, which is more churn than the owls' one-paragraph rationale justified. Left as a follow-up if the unified pipeline ever causes user confusion.
+
+### 13b. Implementation (small inline pass)
+
+- `parse_args`:
+  - New primary: `--bind-notebook` with `dest="target_notebook"`, shown in `--help`.
+  - Legacy: `--notebook-url` with `dest="notebook_url_legacy"`, `help=argparse.SUPPRESS` (hidden).
+- Main dispatcher:
+  - Early check: if `--notebook-url` was given, print the deprecation warning to stderr, fold its values into `args.target_notebook`.
+  - If BOTH flags given with different values → error ("use only one").
+  - All downstream references to `args.notebook_url` → `args.target_notebook` (2 sites updated).
+- Docs: CLAUDE.md gets 4 new `--bind-notebook` examples (standalone, folder path, bare UUID, combined with `--setup`) + a note mentioning `--notebook-url` is the deprecated alias. INDEX_LIST_SPEC.md §4 + §5 updated to use the new name; §5 gets a new paragraph explicitly documenting the legacy-alias contract.
+
+### 13c. Verification
+- `manipulate_notebooklm_from_yt_playlist --bind-notebook "invalid"` → normal error, no warning ✓
+- `manipulate_notebooklm_from_yt_playlist --notebook-url "invalid"` → deprecation warning to stderr, then normal error ✓
+- `--help` shows `--bind-notebook` only (`--notebook-url` hidden) ✓
+- Grep confirms no remaining `args.notebook_url` (without `_legacy` suffix) references in dispatcher code.
+
+### 13d. Owls meta-observation
+This was the 4th owls council in this session, all on naming/shape/design questions. They've reliably saved me from at least one bad call per session. The pattern holding: **when in doubt about CLI surface, spend 2 minutes on an owls council rather than picking inside my own head.**

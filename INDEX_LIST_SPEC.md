@@ -85,7 +85,7 @@ When standardize runs, if the current folder name ≠ derived target, the folder
 | `--setup <playlist>` (find/create)            | yes          | from `find_or_create_notebook` UUID | `Joshua_<playlist_title>` |
 | `--setup <nb_url> <playlist>` (bind new)      | yes          | from CLI nb_url | `Joshua_<playlist_title>` |
 | `--setup <nb_url> [path]` (bind existing)     | yes          | from CLI nb_url | existing line 3, else `Joshua_<playlist_title>` |
-| `--notebook-url <url>` (standalone)           | yes          | from CLI nb_url | same as above |
+| `--bind-notebook <url>` (standalone)          | yes          | from CLI nb_url | same as above |
 | `--auto <playlist>` (incl. `--update` subprocess) | yes      | from bound nb_id | existing line 3, else `Joshua_<playlist_title>` |
 | `-r`, `--reindex` (legacy folder)             | no           | backfill from current binding (if missing) | backfill from cloud title (if missing) |
 
@@ -95,7 +95,9 @@ The `-r` / `--reindex` path deliberately **doesn't standardize** — it only bac
 
 ## 5. Line-2 rebind behavior
 
-Any `--setup <nb_url>` / `--notebook-url <nb_url>` invocation **overwrites line 2** with the CLI-supplied URL unconditionally. This is treated as an explicit rebind — the CLI always wins. If you typed the wrong URL, you effectively switched notebooks; edit line 2 or re-run with the correct URL to fix.
+Any `--setup <nb_url>` / `--bind-notebook <nb_url>` invocation **overwrites line 2** with the CLI-supplied URL unconditionally. This is treated as an explicit rebind — the CLI always wins. If you typed the wrong URL, you effectively switched notebooks; edit line 2 or re-run with the correct URL to fix.
+
+**Legacy alias:** `--notebook-url` is kept as a hidden deprecated alias of `--bind-notebook` for scripts using the old name. It emits a one-line deprecation warning to stderr when used. Same behavior otherwise; will be removed in a future version.
 
 ## 6. Preservation across regeneration
 

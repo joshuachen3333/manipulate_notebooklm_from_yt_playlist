@@ -300,3 +300,45 @@ New helpers `parse_index_entry_line()` + `format_index_entry_line()` — single 
 
 ### 7d. `global DEBUG, AUTO_YES` hoisted to top of `main()`
 Adding the `--add-video` branch earlier in `main()` exposed a `SyntaxError: name 'DEBUG' is assigned to before global declaration` because the previous code's `global DEBUG, AUTO_YES` was buried inside a later branch. Moved the declaration to the top of `main()`; removed the redundant inner declaration.
+
+## 8. [2026-04-18] Owls council code review of 3726bf7 + parallel-agent fixes
+
+First real use of both new skills on project code. Ran `3-ai-owls-council` on the just-pushed `--add-video` / fractional-reindex / 5-col-schema commit, then used `superpowers:dispatching-parallel-agents` to fix the findings.
+
+Prompts:
+- "do you know the 3-ai-owls?"
+- "run the owls to review, quality control, improve (no extra feature yet) on our current code"
+- "yes, use /superpowers whatever to bang the parallel show"
+
+### 8a. Owls council result
+Fed them the full diff of `manipulate_notebooklm_from_yt_playlist.py` from commit `3726bf7` (~24 KB / 543 lines). 3 rounds of rebuttal with no early-stop (real disagreements). Verdict: **BLOCK**. 7 blockers, 3 should-fix, 5 consider. Full log saved to `3-ai-owls-council.md` in repo root.
+
+Surprising quality: the owls caught genuine production bugs that would have bitten within days — not just style preferences. Most impactful finds:
+- **Silent data loss in `reindex_sources`**: malformed lines dropped + rewrite = permanent loss.
+- **`needs_rewrite` always true**: `str(1.0) != "1"` made every `--reindex` rewrite the file unconditionally.
+- **Non-atomic `--add-video`**: tracking file written before `index.list`, creating ghost entries on partial failure.
+
+One disputed blocker (index-collision edge case) — I agreed with Codex against Gemini and skipped it.
+
+### 8b. Parallel-agent dispatch
+Grouped the 4 highest-priority issues into 3 independent function domains:
+- **Agent 1** — `reindex_sources()`: Bug A (data-loss orphan tracking), Bug B (rewrite-detection comparison), Bug C (duplicate-URL handling).
+- **Agent 2** — `add_single_video()`: Bug #4 (reorder writes so `index.list` append precedes tracking-file record, both native and whisper paths).
+- **Agent 3** — `main()` resume-load + `sync_tracking_from_notebook()`: consolidate onto `parse_index_entry_line()` single source of truth.
+
+All three ran concurrently against the same file. One minor race: Agent 1's first edit was rejected because Agent 2 had shifted line numbers mid-dispatch; Agent 1 re-read and re-applied successfully. No data loss — Edit's file-modified guard worked correctly.
+
+### 8c. Integrated result
+`+110 / -41` lines in one file. Syntax passes; parser roundtrip still works across legacy 4-col, new 5-col, short 3-col, and fractional rows. All 4 blockers + 1 should-fix landed as designed.
+
+### 8d. Deferred (not worth one-line churn)
+- TSV injection from tabs/newlines in titles — low real-world probability
+- Race on concurrent `--add-video` — would need `add_source_working.lock` plumbing reuse
+- Disputed index-collision edge case
+- "Consider" items: CJK padding widths, URL normalization, magic-number naming, help-text mismatch, non-idiomatic `import math` placement
+
+### 8e. Skills methodology validation
+This session was a fair test of whether the two new skills pull their weight:
+- **owls-council** surfaced bugs I hadn't seen (even after writing the code myself) — genuinely useful.
+- **dispatching-parallel-agents** turned a 4-bug queue into 3 concurrent edits with zero conflicts — noticeably faster than sequential.
+Both skills stay in the rotation.

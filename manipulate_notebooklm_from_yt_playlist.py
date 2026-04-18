@@ -2364,6 +2364,20 @@ def add_single_video(
         indexed = format_title_with_index(new_idx, title)
         rename_source(source_id, indexed)  # tolerate rename failure; source is in
         elapsed = int(time.time() - t0)
+        # Atomicity: append to index.list FIRST, then record tracking.
+        # If the index.list append fails → bail out before writing the tracking
+        # file (user can retry cleanly). If index.list succeeds but tracking
+        # write fails later → --reindex / sync_tracking_from_notebook will
+        # self-heal the tracking line from the index.list row.
+        try:
+            with open(index_file, 'a', encoding='utf-8') as f:
+                f.write(format_index_entry_line(
+                    new_idx, video_url, title, source=source_marker, date="",
+                ))
+        except Exception as e:
+            print(f"  ERROR: failed to append to {index_file}: {e}", file=sys.stderr)
+            return False
+        print(f"  Appended to {index_file} with source={source_marker!r}")
         record_success_url(new_idx, video_url, elapsed, ok_file)
         print(f"  SUCCESS [YouTube]: {indexed} ({elapsed}s)")
         native_success = True
@@ -2391,15 +2405,22 @@ def add_single_video(
             print(f"  Failed to add text source: {text_source_id}")
             return False
         elapsed = int(time.time() - t0)
+        # Atomicity: append to index.list FIRST, then record tracking.
+        # Same rationale as native path above — if the append fails we bail
+        # before writing the tracking file; if tracking fails later, reindex
+        # rediscovers the row from index.list.
+        try:
+            with open(index_file, 'a', encoding='utf-8') as f:
+                f.write(format_index_entry_line(
+                    new_idx, video_url, title, source=source_marker, date="",
+                ))
+        except Exception as e:
+            print(f"  ERROR: failed to append to {index_file}: {e}", file=sys.stderr)
+            return False
+        print(f"  Appended to {index_file} with source={source_marker!r}")
         record_video2txt_url(new_idx, video_url, elapsed, video2txt_file)
         print(f"  SUCCESS [Whisper]: {indexed} ({elapsed}s)")
 
-    # Append to index.list with the source marker. No sort_date (user said keep it simple).
-    with open(index_file, 'a', encoding='utf-8') as f:
-        f.write(format_index_entry_line(
-            new_idx, video_url, title, source=source_marker, date="",
-        ))
-    print(f"  Appended to {index_file} with source={source_marker!r}")
     return True
 
 
@@ -2425,15 +2446,13 @@ def sync_tracking_from_notebook(playlist_url: str, index_file: Path,
     new_map = {}
     with open(index_file, 'r', encoding='utf-8') as f:
         for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                parts = line.split('\t')
-                if len(parts) >= 2:
-                    new_idx = int(parts[0])
-                    url = parts[1]
-                    # .rstrip() first to handle fixed-width padding, then strip('"').
-                    title = parts[2].rstrip().strip('"') if len(parts) >= 3 else ""
-                    new_map[url] = (new_idx, title)
+            entry = parse_index_entry_line(line)
+            if entry is None:
+                continue
+            new_idx = int(entry['idx'])
+            url = entry['url']
+            title = entry['title']
+            new_map[url] = (new_idx, title)
 
     success, output = run_command(
         ["notebooklm", "source", "list", "--json"],
@@ -2490,42 +2509,92 @@ def reindex_sources(playlist_url: str,
 
     header_lines: list[str] = []
     parsed_entries: list[dict] = []  # each: {idx, url, title, source, date}
+    orphan_lines: list[tuple[int, str]] = []  # (line_no, raw_line) for unparseable rows
     with open(index_file, 'r', encoding='utf-8') as f:
-        for raw_line in f:
+        for line_no, raw_line in enumerate(f, 1):
             if raw_line.startswith('#'):
                 header_lines.append(raw_line.rstrip('\n'))
+                continue
+            # Blank lines are ignored (not considered orphan).
+            if not raw_line.strip():
                 continue
             entry = parse_index_entry_line(raw_line)
             if entry is not None:
                 parsed_entries.append(entry)
+            else:
+                orphan_lines.append((line_no, raw_line.rstrip('\n')))
+
+    # Bug A: if any lines failed to parse, REFUSE to rewrite index.list
+    # (silently dropping them would cause permanent data loss). Continue
+    # with reindex using only the well-parsed entries, but skip the rewrite
+    # step below so the mangled state is preserved for the user to fix.
+    if orphan_lines:
+        print(
+            f"Error: {len(orphan_lines)} unparseable line(s) in {index_file}; "
+            f"refusing to rewrite index.list to avoid data loss.",
+            file=sys.stderr,
+        )
+        for line_no, raw in orphan_lines:
+            print(f"  line {line_no}: {raw!r}", file=sys.stderr)
+        print(
+            "  Fix these lines manually, then re-run --reindex. "
+            "Proceeding with reindex of well-parsed entries only (no file rewrite).",
+            file=sys.stderr,
+        )
 
     # Sort by float index (stable on ties preserves file order).
     parsed_entries.sort(key=lambda e: e['idx'])
 
     # Renumber: assign clean sequential integers (1..N).
+    # Bug C: detect duplicate URLs. Keep first-seen; warn loudly on dupes so
+    # the user notices. Previously the second occurrence silently overwrote
+    # the first in new_map and only one row got matched/renamed.
     renumbered_for_write: list[dict] = []
     new_map: dict[str, tuple[int, str]] = {}
     source_marker_by_url: dict[str, str] = {}
-    for new_idx, entry in enumerate(parsed_entries, 1):
-        new_entry = {**entry, 'idx': new_idx}
+    seen_urls: dict[str, tuple[int, str]] = {}  # url -> (new_idx, title) of first occurrence
+    duplicate_count = 0
+    for entry in parsed_entries:
+        url = entry['url']
+        if url in seen_urls:
+            first_idx, first_title = seen_urls[url]
+            print(
+                f"Warning: duplicate URL in index.list — {url}\n"
+                f"  kept:     #{first_idx} {first_title!r}\n"
+                f"  skipped:  {entry['idx_raw']} {entry['title']!r}",
+                file=sys.stderr,
+            )
+            duplicate_count += 1
+            continue
+        # Assign the next sequential integer to the kept row so indices stay
+        # 1..N even after duplicates are skipped.
+        assigned_idx = len(renumbered_for_write) + 1
+        new_entry = {**entry, 'idx': assigned_idx}
         renumbered_for_write.append(new_entry)
-        new_map[entry['url']] = (new_idx, entry['title'])
-        source_marker_by_url[entry['url']] = entry['source']
+        new_map[url] = (assigned_idx, entry['title'])
+        source_marker_by_url[url] = entry['source']
+        seen_urls[url] = (assigned_idx, entry['title'])
 
-    # Detect whether any fractional / non-sequential indices existed, so we
-    # only rewrite when the file actually changes.
-    needs_rewrite = any(
-        str(e['idx']) != e['idx_raw'] for e in parsed_entries
-    ) or any(
-        i + 1 != e['idx'] for i, e in enumerate(parsed_entries)
+    # Bug B: detect whether any non-sequential / non-clean indices existed.
+    # Invariant: column-1 raw string already equals the target integer as a
+    # string. Previous `str(e['idx']) != e['idx_raw']` compared e.g. "1.0"
+    # vs "1" and always returned True, so EVERY --reindex rewrote the file.
+    needs_rewrite = (
+        duplicate_count > 0  # duplicates were dropped; file should be rewritten
+        or any(
+            e['idx_raw'].strip() != str(new_idx)
+            for new_idx, e in enumerate(renumbered_for_write, 1)
+        )
     )
-    if needs_rewrite:
+    # Bug A (continued): don't rewrite if there were orphan lines — we must
+    # not lose them.
+    if needs_rewrite and not orphan_lines:
         with open(index_file, 'w', encoding='utf-8') as f:
             for h in header_lines:
                 f.write(h + '\n')
-            for e in renumbered_for_write:
+            for new_idx, e in enumerate(renumbered_for_write, 1):
                 f.write(format_index_entry_line(
-                    e['idx'], e['url'], e['title'],
+                    new_idx, e['url'], e['title'],
                     source=e['source'], date=e['date'],
                 ))
         print(f"index.list rewritten with clean sequential indices "
@@ -3925,17 +3994,17 @@ def main():
         print(f"\nLoading videos from {index_file}...")
         with open(index_file, 'r', encoding='utf-8') as f:
             for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    # Format: "index\turl\ttitle" (tab-separated)
-                    parts = line.split('\t')
-                    if len(parts) >= 2:
-                        idx = int(parts[0])
-                        video_url = parts[1]
-                        # .rstrip() first to handle fixed-width padding, then strip('"').
-                        title = parts[2].rstrip().strip('"') if len(parts) >= 3 else ""
-                        video_entries.append((idx, video_url, title))
-                        url_to_index[video_url] = idx
+                entry = parse_index_entry_line(line)
+                if entry is None:
+                    continue
+                # Resume mode expects clean integer indices (written by
+                # write_index_list/reindex); downstream code indexes/formats
+                # with ints, so narrow float -> int here.
+                idx = int(entry['idx'])
+                video_url = entry['url']
+                title = entry['title']
+                video_entries.append((idx, video_url, title))
+                url_to_index[video_url] = idx
         print(f"Loaded {len(video_entries)} videos from index.list")
     else:
         # Fresh: extract from YouTube

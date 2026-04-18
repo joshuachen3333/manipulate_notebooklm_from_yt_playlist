@@ -84,7 +84,7 @@ while True:
         print(f"Done: {txt_filename}")
 ```
 
-**3. Local script changes (`manipulate_bookmarklm_from_yt_playlist.py`):**
+**3. Local script changes (`manipulate_notebooklm_from_yt_playlist.py`):**
 ```python
 def whisper_via_gdrive(mp3_path: str, output_dir: Path) -> tuple[bool, str]:
     """Upload to Google Drive, wait for Colab to process, download result."""

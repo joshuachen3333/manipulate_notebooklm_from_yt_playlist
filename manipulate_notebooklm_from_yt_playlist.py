@@ -12,11 +12,11 @@ Setup (first time):
     notebooklm status                 # Verify notebook is selected
 
 Usage:
-    python3 manipulate_bookmarklm_from_yt_playlist.py "https://www.youtube.com/playlist?list=PLxxx"
-    python3 manipulate_bookmarklm_from_yt_playlist.py "https://www.youtube.com/watch?v=xxx&list=PLyyy&index=1"
-    python3 manipulate_bookmarklm_from_yt_playlist.py -i 25 "https://..."   # Custom interval (25 seconds)
-    python3 manipulate_bookmarklm_from_yt_playlist.py -r                    # Resume from index.list
-    python3 manipulate_bookmarklm_from_yt_playlist.py --remote-sshfs user@host "https://..."  # Use remote GPU
+    python3 manipulate_notebooklm_from_yt_playlist.py "https://www.youtube.com/playlist?list=PLxxx"
+    python3 manipulate_notebooklm_from_yt_playlist.py "https://www.youtube.com/watch?v=xxx&list=PLyyy&index=1"
+    python3 manipulate_notebooklm_from_yt_playlist.py -i 25 "https://..."   # Custom interval (25 seconds)
+    python3 manipulate_notebooklm_from_yt_playlist.py -r                    # Resume from index.list
+    python3 manipulate_notebooklm_from_yt_playlist.py --remote-sshfs user@host "https://..."  # Use remote GPU
 """
 
 import sys
@@ -152,7 +152,8 @@ def check_notebook_selected() -> tuple[bool, str, str]:
         return False, "", ""
 
     # Handle nested structure: {"notebook": {"id": "...", "title": "..."}}
-    notebook = output.get("notebook", {})
+    # Tolerate {"notebook": null} (e.g., when context.json is unreadable).
+    notebook = output.get("notebook") or {}
     notebook_id = notebook.get("id", "") or output.get("notebook_id", "")
     title = notebook.get("title", "") or output.get("title", "")
 
@@ -793,6 +794,10 @@ def standardize_folder_and_notebook(playlist_title: str,
             try:
                 os.rename(cwd, new_path)
                 os.chdir(new_path)
+                # NOTEBOOKLM_HOME was set from the old absolute path; update it
+                # so subsequent `notebooklm` CLI calls find the moved .notebooklm/.
+                if os.environ.get("NOTEBOOKLM_HOME"):
+                    os.environ["NOTEBOOKLM_HOME"] = str((new_path / ".notebooklm").absolute())
                 print(f"  Folder renamed: {cwd.name} → {target_folder}")
             except OSError as e:
                 print(f"  Folder rename failed: {e}")
@@ -882,8 +887,18 @@ def auto_setup(url: str, notebook_url: str | None = None) -> str:
         print(f"  Auth already exists (up to date)")
     os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
 
-    # 4. Bind to given notebook, or find/create by title
+    # 4. Bind to given notebook. Priority:
+    #    a) explicit notebook_url arg
+    #    b) index.list line 2 (persistent record — the authoritative binding)
+    #    c) find_or_create_notebook by title (legacy fallback)
     print("Setting up notebook...")
+    nb_id_from_line2: str | None = None
+    if in_place and not notebook_url:
+        meta = read_index_metadata(Path.cwd() / "index.list")
+        if meta.get("notebook_url"):
+            candidate = extract_notebook_id(meta["notebook_url"])
+            if candidate:
+                nb_id_from_line2 = candidate
     if notebook_url:
         nb_id = extract_notebook_id(notebook_url)
         if not nb_id:
@@ -895,6 +910,14 @@ def auto_setup(url: str, notebook_url: str | None = None) -> str:
             print("Check the notebook URL and that you're authenticated.", file=sys.stderr)
             sys.exit(1)
         print(f"  Bound to notebook: {nb_id}")
+    elif nb_id_from_line2:
+        nb_id = nb_id_from_line2
+        success, _ = run_command(["notebooklm", "use", nb_id])
+        if not success:
+            print(f"Error: Failed to select notebook {nb_id} (from index.list line 2)", file=sys.stderr)
+            print("Check the notebook URL and that you're authenticated.", file=sys.stderr)
+            sys.exit(1)
+        print(f"  Bound to notebook (from index.list): {nb_id}")
     else:
         nb_id = find_or_create_notebook(playlist_title)
         print(f"  Notebook ID: {nb_id[:8]}...")
@@ -2380,6 +2403,33 @@ def cleanup_mp3_files(start_path: Path) -> tuple[int, int]:
     return total_deleted, total_freed
 
 
+def _find_folder_by_playlist_url(parent: Path, playlist_url: str) -> Path | None:
+    """Locate a direct subdirectory of `parent` whose index.list references the
+    given playlist_url. Used to recover the live path after a folder rename.
+    Returns the matched Path or None."""
+    try:
+        target_pid = extract_playlist_id(playlist_url)
+    except SystemExit:
+        return None
+    if not parent.is_dir():
+        return None
+    for child in parent.iterdir():
+        if not child.is_dir():
+            continue
+        idx = child / "index.list"
+        if not idx.exists():
+            continue
+        stored = read_playlist_url_from_index(idx)
+        if not stored:
+            continue
+        try:
+            if extract_playlist_id(stored) == target_pid:
+                return child
+        except SystemExit:
+            continue
+    return None
+
+
 def find_playlist_folders(start_path: Path) -> list[tuple[Path, str]]:
     """Find all managed playlist folders under start_path.
     Returns list of (folder_path, playlist_url) sorted by path."""
@@ -2572,6 +2622,16 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
                 print(f"ERROR: {e}")
                 errors += 1
                 continue
+
+        # Folder may have been renamed inside the subprocess (when the user
+        # changed line 3 of index.list). Rediscover the live path before
+        # writing the log so we don't target a dead inode.
+        if not folder_path.exists():
+            new_path = _find_folder_by_playlist_url(folder_path.parent, playlist_url)
+            if new_path:
+                if not stream_output:
+                    print(f"  (folder renamed → {new_path.name}/) ", end="", flush=True)
+                folder_path = new_path
 
         # Write full log
         log_file = folder_path / "update.log"
@@ -2955,12 +3015,12 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 manipulate_bookmarklm_from_yt_playlist.py "https://www.youtube.com/playlist?list=PLxxx"
-  python3 manipulate_bookmarklm_from_yt_playlist.py "https://www.youtube.com/watch?v=abc&list=PLxxx"
-  python3 manipulate_bookmarklm_from_yt_playlist.py -i 25 "https://..."      # 25 second interval
-  python3 manipulate_bookmarklm_from_yt_playlist.py -r                       # Resume (URL from index.list)
-  python3 manipulate_bookmarklm_from_yt_playlist.py -r "https://..."         # Resume with explicit URL
-  python3 manipulate_bookmarklm_from_yt_playlist.py --retry 3 "https://..."  # Max 3 retries before whisper
+  python3 manipulate_notebooklm_from_yt_playlist.py "https://www.youtube.com/playlist?list=PLxxx"
+  python3 manipulate_notebooklm_from_yt_playlist.py "https://www.youtube.com/watch?v=abc&list=PLxxx"
+  python3 manipulate_notebooklm_from_yt_playlist.py -i 25 "https://..."      # 25 second interval
+  python3 manipulate_notebooklm_from_yt_playlist.py -r                       # Resume (URL from index.list)
+  python3 manipulate_notebooklm_from_yt_playlist.py -r "https://..."         # Resume with explicit URL
+  python3 manipulate_notebooklm_from_yt_playlist.py --retry 3 "https://..."  # Max 3 retries before whisper
         """
     )
     parser.add_argument(

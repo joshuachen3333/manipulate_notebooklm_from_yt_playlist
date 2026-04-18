@@ -6,106 +6,106 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Batch upload YouTube playlist videos to Google NotebookLM with automatic Simplified → Traditional Chinese (簡體 → 正體中文) conversion.
 
-## Main Script: `manipulate_bookmarklm_from_yt_playlist.py`
+## Main Script: `manipulate_notebooklm_from_yt_playlist.py`
 
 ### Usage
 
 ```bash
 # Fresh upload (sorted by date, oldest first — default)
-python3 manipulate_bookmarklm_from_yt_playlist.py "https://youtube.com/playlist?list=PLxxx"
+python3 manipulate_notebooklm_from_yt_playlist.py "https://youtube.com/playlist?list=PLxxx"
 
 # Keep original YouTube playlist order (no date sorting)
-python3 manipulate_bookmarklm_from_yt_playlist.py --sort-by-original-list-order "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --sort-by-original-list-order "https://..."
 
 # Sort newest first instead of oldest first
-python3 manipulate_bookmarklm_from_yt_playlist.py --reverse-order "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --reverse-order "https://..."
 
 # Only create index.list, don't upload (no notebook needed)
-python3 manipulate_bookmarklm_from_yt_playlist.py --list-only "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --list-only "https://..."
 
 # Reindex: rename notebook sources to match current sorted index.list
 # (matches by title against YouTube playlist)
-python3 manipulate_bookmarklm_from_yt_playlist.py --reindex
+python3 manipulate_notebooklm_from_yt_playlist.py --reindex
 
 # Reindex: rename notebook sources to match current sorted index.list
-python3 manipulate_bookmarklm_from_yt_playlist.py --reindex
+python3 manipulate_notebooklm_from_yt_playlist.py --reindex
 
 # Resume from where you left off
-python3 manipulate_bookmarklm_from_yt_playlist.py -r
+python3 manipulate_notebooklm_from_yt_playlist.py -r
 
 # Custom interval between uploads (default: 20s)
-python3 manipulate_bookmarklm_from_yt_playlist.py -i 30 "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py -i 30 "https://..."
 
 # Disable whisper fallback (just skip failed videos)
-python3 manipulate_bookmarklm_from_yt_playlist.py --without-whisper "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --without-whisper "https://..."
 
 # Max retries before whisper fallback (default: 2)
-python3 manipulate_bookmarklm_from_yt_playlist.py --retry 3 "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --retry 3 "https://..."
 
 # Start from a specific index (skip entries before #15)
-python3 manipulate_bookmarklm_from_yt_playlist.py -r --start-from 15
+python3 manipulate_notebooklm_from_yt_playlist.py -r --start-from 15
 
 # Skip specific indices (multiple formats supported)
-python3 manipulate_bookmarklm_from_yt_playlist.py -r --skip 41 12 53
-python3 manipulate_bookmarklm_from_yt_playlist.py -r --skip 43-47
-python3 manipulate_bookmarklm_from_yt_playlist.py -r --skip 14,9,21,33-37
+python3 manipulate_notebooklm_from_yt_playlist.py -r --skip 41 12 53
+python3 manipulate_notebooklm_from_yt_playlist.py -r --skip 43-47
+python3 manipulate_notebooklm_from_yt_playlist.py -r --skip 14,9,21,33-37
 
 # Use Google Colab T4 GPU for whisper (6-15x faster)
 # Local fallback is ON by default (if Colab fails, falls back to local whisper)
-python3 manipulate_bookmarklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live "https://..."
 
 # Colab only, no local fallback (exit if Colab fails)
-python3 manipulate_bookmarklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live --no-local-fallback "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live --no-local-fallback "https://..."
 
 # Custom Colab timeout (default: 0 = no timeout, health checked every 5s)
-python3 manipulate_bookmarklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live --colab-timeout 1800 "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live --colab-timeout 1800 "https://..."
 
 # Use remote GPU via SSHFS (e.g., Rocky Linux desktop with RTX 2060)
-python3 manipulate_bookmarklm_from_yt_playlist.py --remote-sshfs cschen@genesis "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --remote-sshfs cschen@genesis "https://..."
 
 # Remote SSHFS with custom path (default: /genesis/tmp)
-python3 manipulate_bookmarklm_from_yt_playlist.py --remote-sshfs cschen@genesis:/custom/path "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --remote-sshfs cschen@genesis:/custom/path "https://..."
 
 # Remote only, no local fallback (exit if remote fails)
-python3 manipulate_bookmarklm_from_yt_playlist.py --remote-sshfs cschen@genesis --no-local-fallback "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --remote-sshfs cschen@genesis --no-local-fallback "https://..."
 
 # Fallback chain: Colab → SSHFS → Local
-python3 manipulate_bookmarklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live --remote-sshfs cschen@genesis "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --colab-url https://xxxxx.gradio.live --remote-sshfs cschen@genesis "https://..."
 
 # Debug mode (shows extra diagnostic output for Colab connection issues)
-python3 manipulate_bookmarklm_from_yt_playlist.py --debug --colab-url https://xxxxx.gradio.live "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --debug --colab-url https://xxxxx.gradio.live "https://..."
 
 # Multi-session: run multiple terminals in parallel (auto-coordinates)
 # Terminal 1 (picks first pending video)
-python3 manipulate_bookmarklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
 # Terminal 2 (auto-skips videos being processed, picks next available)
-python3 manipulate_bookmarklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
 
 # Full auto: setup folder + notebook + index + reindex + upload (one command)
-python3 manipulate_bookmarklm_from_yt_playlist.py --auto "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --auto "https://..."
 
 # Setup only: create folder, auth, find/create notebook, then exit
-python3 manipulate_bookmarklm_from_yt_playlist.py --setup "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --setup "https://..."
 
 # Update all playlist folders under a directory (batch --auto)
-python3 manipulate_bookmarklm_from_yt_playlist.py --update              # current dir
-python3 manipulate_bookmarklm_from_yt_playlist.py --update /path/to/dir # specific dir
-python3 manipulate_bookmarklm_from_yt_playlist.py --update -v           # verbose output
-python3 manipulate_bookmarklm_from_yt_playlist.py --update --debug      # debug output
+python3 manipulate_notebooklm_from_yt_playlist.py --update              # current dir
+python3 manipulate_notebooklm_from_yt_playlist.py --update /path/to/dir # specific dir
+python3 manipulate_notebooklm_from_yt_playlist.py --update -v           # verbose output
+python3 manipulate_notebooklm_from_yt_playlist.py --update --debug      # debug output
 
 # Cleanup: delete audio files where matching txt exists
-python3 manipulate_bookmarklm_from_yt_playlist.py --cleanup             # current dir
-python3 manipulate_bookmarklm_from_yt_playlist.py --cleanup /path/to/dir
+python3 manipulate_notebooklm_from_yt_playlist.py --cleanup             # current dir
+python3 manipulate_notebooklm_from_yt_playlist.py --cleanup /path/to/dir
 
 # Try to replace whisper text sources with native YouTube sources
-python3 manipulate_bookmarklm_from_yt_playlist.py --text-back-to-video-effort          # all text sources
-python3 manipulate_bookmarklm_from_yt_playlist.py --text-back-to-video-effort "https://..." # specific URL
+python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort          # all text sources
+python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort "https://..." # specific URL
 
 # Disable remote SSHFS (on by default with cschen@genesis)
-python3 manipulate_bookmarklm_from_yt_playlist.py --no-remote-sshfs "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py --no-remote-sshfs "https://..."
 
 # Auto-accept all yes/no prompts
-python3 manipulate_bookmarklm_from_yt_playlist.py -y -r "https://..."
+python3 manipulate_notebooklm_from_yt_playlist.py -y -r "https://..."
 ```
 
 ### URL Handling (Fool-proof)
@@ -226,7 +226,7 @@ Also runs automatically at the end of every normal upload session.
 
 ```
 ./
-├── manipulate_bookmarklm_from_yt_playlist.py  # Main script
+├── manipulate_notebooklm_from_yt_playlist.py  # Main script
 ├── index.list              # Playlist URLs (auto-generated)
 ├── add_source_ok.txt       # Successfully uploaded (direct)
 ├── add_source_video2txt.txt # Successfully uploaded (via whisper)

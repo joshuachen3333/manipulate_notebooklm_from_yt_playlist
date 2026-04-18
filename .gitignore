@@ -23,3 +23,6 @@ reboot_over_and_over.md
 # Owls council / debate review artifacts (regenerated per run, not part of spec)
 3-ai-owls-council.md
 3-ai-dogs-debate.md
+
+# Claude Code session-local settings
+.claude/

@@ -493,3 +493,91 @@ The RED phase doubles as evidence that the skills ARE valuable: without them, ev
 ### 11e. Skipped (deliberately)
 - Owls blocker #7 (disputed index-collision edge) — I agreed with Codex against Gemini on this one; low construction likelihood, not worth guard code.
 - Further iterating the two skills from the RED findings (beyond documenting them) — acceptable as-is; the docs already emphasize the driver-script path, Known Gaps now has evidence.
+
+## 12. [2026-04-18] Design B — Curated notebooks, `--new-notebook` + `--attach-playlist` (owls-guided)
+
+User raised a new use case not covered by the tool: "start a themed notebook (live trading / short-timeframe auto-coding etc.) from a single video and grow it over time — no source YouTube playlist." This is fundamentally different from `--setup`'s playlist-seeded notebooks.
+
+Extensive design discussion driven by three rounds of owls-council deliberation:
+
+Prompts:
+- "without prior existence of a playlist, I might want to create one notebook, just by starting from a good single video url. discuss this very important situation... 3 owls please discuss this deeply."
+- "用正體中文重新詳述一次"
+- "A C D 分別又是什麼？"
+- "manipulate_notebooklm_from_yt_playlist --new-notebook \"<name>\" [--from-video <url>] 詳細列舉 B 的指令情境"
+- "call the 3 owls about these decisions: 1, father folders should be cwd/... 2, 可否省略 --from-video?"
+- "另外, 我接受沒有給標題... 若標題與 video-url 都給, 位置順序; 逗號或者空格分隔都要通融"
+- "不要當作父 dir 可以嗎？就純粹報錯然後停止"
+- "我們何時引入接受 path 當第三個 arg 了？不是兩個嗎？"
+- "或許妳是對的, 如我讓--new-notebook 也接受 path 當第三個參數(but optional, 可有可無) 會怎樣, 三隻貓頭鷹討論一下給我建議"
+- "ok, go ahead!"
+
+### 12a. Three owls councils on design (not code review)
+
+**Council 1 (5 rounds, 4 designs compared):** Converged on **Design B** — `--new-notebook [<name>] [<video_url>]` as a new top-level command. Rejected:
+- Design A (overload `--setup` with video URL): the video title rarely matches the user's mental model for the notebook's theme
+- Design C (`--add-video --bootstrap`): overloads an existing command with dual create/append modes
+- Design D (two-step `--new-notebook` + `--add-video`): awkward empty-shell intermediate state
+
+Key sub-decisions from council 1:
+- **Line 1 handling**: empty value `# playlist:\t\t` signals "Curated" mode; preserves positional stability for parsers vs null
+- **Mixed-mode later**: "Sync Contract" model — `--attach-playlist <url>` promotes Curated → Managed by writing line 1
+- **Name**: originally required — but user overrode in council 2 to allow auto-derive
+- **Source marker**: `extra` is enough; no need for separate `seed` marker
+
+**Council 2 (2 rounds, CLI ergonomics):** Dropped the `--from-video` flag in favor of a bare video URL positional. Approved `cwd` as the default parent folder (no path arg). Approved order-agnostic, comma-tolerant positionals per the existing classifier pattern.
+
+Classifier rulings:
+- `watch?v=X&list=Y` (mixed video+playlist) → **reject** with clear error (don't silently strip list=)
+- `/shorts/X`, `youtu.be/X`, `m.youtube.com/watch?v=X` → accept as video
+- `list=WL|RD|PL|UU` shortcuts → treat as playlist
+- Malformed → reject with host-specific error
+
+**Council 3 (1 round, converged immediately):** User asked whether `--new-notebook` should ALSO accept an optional `<path>` positional (for a different parent dir). Both owls **rejected** — the "haunted directory" risk (a name matching an existing dir in cwd) breaks least-astonishment; the `cd /target && tool --new-notebook ...` workaround is cheap. Cwd-only stays.
+
+Final CLI shape:
+```
+--new-notebook [<name>] [<video_url>]    # folder always in cwd
+--attach-playlist <playlist_url> [<folder>]
+```
+
+### 12b. Implementation — three parallel agents + inline cleanup
+
+Dispatched three agents in parallel:
+
+**Agent 1 — `--new-notebook` + classifier extension**
+- Extended `classify_setup_arg` with two new kinds: `'video'` (single-video YouTube URLs, rejects mixed forms) and `'name'` (non-empty text that isn't URL/path/UUID). Uses `normalize_youtube_url` for canonicalization.
+- New `new_notebook_setup(name, seed_url) -> str` helper placed near `auto_setup`. Strips `Joshua_` prefix doubling, fails cleanly on unavailable seed videos, writes line 1 empty, refuses to run if target folder already has `index.list`.
+- Argparse + dispatcher reject all wrong positional kinds (playlist/notebook/path) with the exact error messages owls council specified.
+
+**Agent 2 — Curated-mode audit across 5 code sites**
+- `read_playlist_url_from_index`: returns `None` on empty (not empty string).
+- `_match_sources_by_title`: skips `yt-dlp --flat-playlist` when `playlist_url` is None; URL-equality and `#URL` fulltext strategies still run. Prints "Curated notebook — matching by URL and #URL only."
+- Confirmed no other `yt-dlp --flat-playlist` / `get_playlist_videos` call site is reachable via a Curated control-flow; left strict.
+- `find_playlist_folders` widened return type to `list[tuple[Path, str | None]]` and included Curated folders.
+- `run_update` branches: Managed folders → subprocess `--auto <url>`; Curated folders → subprocess `--reindex` (light pass). New `curated_reindexed` counter in summary. `_find_folder_by_playlist_url` skipped for Curated (can't look up by empty URL — flagged as follow-up).
+- `--reindex` standalone handler: replaced the hard URL-required check with `index_file.exists()` and passes `None` through.
+
+**Agent 3 — `--attach-playlist`**
+Bailed without implementing (returned "let me do it quickly then pause"). Finished inline instead (~60 lines):
+- Extended `update_index_metadata` to accept `playlist_url=None` kwarg with empty-string-is-allowed semantics (so `# playlist:\t\t` stays emitted even when value is empty).
+- Argparse `--attach-playlist PLAYLIST_URL` + optional path positional (same classifier pattern as `--add-video`).
+- Main dispatcher: validates folder has `index.list` + `.notebooklm/`, checks current line 1 is empty (refuses to overwrite a bound playlist), validates PLAYLIST_URL via `extract_playlist_id`, canonicalizes via `build_playlist_url`, writes line 1, prints next-steps message — does NOT auto-run `--auto` (user's choice).
+
+### 12c. Docs + housekeeping
+- `CLAUDE.md`: 3 `--new-notebook` examples (empty, video-only auto-derive, both) + 2 `--attach-playlist` examples with the "run `--auto` afterward" note.
+- `INDEX_LIST_SPEC.md`: new §11 "Curated vs Managed" with mode comparison table, bootstrap examples, promotion workflow, behavioral-differences list, and a "one-way contract" note on why there's no `--detach-playlist`.
+- Line-1 description updated in §1 to mention Curated mode.
+- `.gitignore`: added `.claude/` (Claude Code session-local settings directory).
+- `3-ai-owls-council.md`: untracked (was tracked from entry #8; now properly ignored — regenerated per council run).
+
+### 12d. Verification
+- `python3 -c "import ast; ast.parse(...)"` → ok after each stage
+- `manipulate_notebooklm_from_yt_playlist --help` shows both `--new-notebook` and `--attach-playlist` with correct help text
+- Classifier spot-tested on 10 inputs: 3 video forms, 2 playlist forms, 1 notebook URL, 1 path, 2 names (ASCII + CJK), 1 empty — all correctly classified
+
+### 12e. Lessons from 3 councils in a row
+- Owls councils are fast (~2 minutes per council at 2-round cap, ~10 min at 5-round cap). Light enough to reach for mid-design.
+- "Reject" verdicts from owls are as valuable as "approve" — council 3 actively saved a design regression (was leaning toward accepting the optional path; owls talked me out of it).
+- Using owls for **design** (brainstorming) works as well as for **review** (code critique), though the skill was built for review. Same skill, both modes.
+- Three agents in parallel on the same file still hits the Edit file-modified guard sometimes — not a correctness issue, just extra latency as the losing agent re-reads and re-applies. One agent (Agent 3) bailed mid-work; reasonable fallback is finish inline, which is what I did.

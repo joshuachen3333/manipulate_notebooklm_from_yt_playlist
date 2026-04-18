@@ -672,11 +672,13 @@ def write_index_list(video_entries: list, playlist_url: str, index_file: Path,
 
 
 def update_index_metadata(index_file: Path, *,
+                          playlist_url: str | None = None,
                           notebook_url: str | None = None,
                           notebook_title: str | None = None):
-    """Update only the notebook_url / notebook_title headers in an existing
-    index.list, preserving all video entries. Either value can be None to
-    leave that field alone."""
+    """Update header lines (# playlist / # notebook url / # notebook title)
+    in an existing index.list, preserving all video entries. Any kwarg that
+    is ``None`` leaves that field unchanged. Pass an empty string to emit
+    the line with an empty value (Curated-mode line 1)."""
     if not index_file.exists():
         return
     # Separate header lines from body lines
@@ -691,12 +693,12 @@ def update_index_metadata(index_file: Path, *,
         body_start = len(lines)
     body = lines[body_start:]
     meta = read_index_metadata(index_file)
-    playlist_url = meta['playlist_url'] or ''
+    pl_url = playlist_url if playlist_url is not None else (meta['playlist_url'] or '')
     nb_url = notebook_url if notebook_url is not None else meta['notebook_url']
     nb_title = notebook_title if notebook_title is not None else meta['notebook_title']
     with open(index_file, 'w', encoding='utf-8') as f:
-        if playlist_url:
-            f.write(f"# playlist:\t\t{playlist_url}\n")
+        # Always emit line 1 — empty value signals Curated mode
+        f.write(f"# playlist:\t\t{pl_url}\n")
         if nb_url:
             f.write(f"# notebook url:\t\t{nb_url}\n")
         if nb_title:
@@ -705,8 +707,14 @@ def update_index_metadata(index_file: Path, *,
 
 
 def read_playlist_url_from_index(index_file: Path) -> str | None:
-    """Read playlist URL from index.list metadata headers."""
-    return read_index_metadata(index_file).get('playlist_url')
+    """Read playlist URL from index.list metadata headers.
+
+    Returns None for both missing header and empty-string value (Curated-mode
+    notebooks have ``# playlist:\\t\\t`` with no URL). Treat None as
+    "no source playlist bound" — callers use ``if playlist_url:``.
+    """
+    url = read_index_metadata(index_file).get('playlist_url')
+    return url or None
 
 
 def derive_folder_name(notebook_title: str) -> str:
@@ -1015,23 +1023,70 @@ def standardize_folder_and_notebook(playlist_title: str,
 
 
 def classify_setup_arg(arg: str) -> tuple[str, str]:
-    """Classify a --setup/--auto positional arg.
+    """Classify a --setup/--auto/--new-notebook positional arg.
 
     Returns (kind, value):
     - ('notebook', uuid) — NotebookLM notebook URL or bare UUID
-    - ('playlist', url) — YouTube playlist/watch URL
+    - ('playlist', url) — YouTube playlist or watch-with-list URL
+    - ('video', canonical_url) — Single YouTube video URL (no list= param)
     - ('path', resolved_path) — existing directory
-    - ('unknown', arg) — none of the above
+    - ('name', arg) — non-empty string that isn't any of the above
+    - ('unknown', arg) — empty / malformed token
     """
-    nb_id = extract_notebook_id(arg)
+    if arg is None:
+        return ('unknown', '')
+    s = arg.strip()
+    if not s:
+        return ('unknown', s)
+
+    nb_id = extract_notebook_id(s)
     if nb_id:
         return ('notebook', nb_id)
-    if 'youtube.com' in arg or 'youtu.be' in arg:
-        return ('playlist', arg)
-    p = Path(arg)
+
+    # YouTube URL detection — distinguish single-video vs playlist.
+    if 'youtube.com' in s or 'youtu.be' in s:
+        to_parse = s if '://' in s else ('https://' + s)
+        try:
+            parsed = urlparse(to_parse)
+        except Exception:
+            parsed = None
+        host = (parsed.hostname or "").lower() if parsed is not None else ""
+        path = (parsed.path or "") if parsed is not None else ""
+        qs = {}
+        if parsed is not None:
+            try:
+                qs = parse_qs(parsed.query)
+            except Exception:
+                qs = {}
+
+        has_list_param = 'list' in qs and any(v for v in qs.get('list', []))
+
+        if host == 'youtu.be':
+            if has_list_param:
+                return ('playlist', s)
+            # youtu.be/<id> — single video. Canonicalize.
+            return ('video', normalize_youtube_url(s))
+
+        if host in ('youtube.com', 'www.youtube.com', 'm.youtube.com'):
+            if path == '/playlist':
+                return ('playlist', s)
+            if path.startswith('/shorts/'):
+                if has_list_param:
+                    return ('playlist', s)
+                return ('video', normalize_youtube_url(s))
+            if path == '/watch':
+                if has_list_param:
+                    return ('playlist', s)
+                return ('video', normalize_youtube_url(s))
+
+        # Fallback for any other youtube.com URL shape: treat as playlist-ish
+        # so the old behaviour is preserved.
+        return ('playlist', s)
+
+    p = Path(s)
     if p.is_dir():
         return ('path', str(p.resolve()))
-    return ('unknown', arg)
+    return ('name', s)
 
 
 def auto_setup(url: str, notebook_url: str | None = None) -> str:
@@ -1124,6 +1179,128 @@ def auto_setup(url: str, notebook_url: str | None = None) -> str:
     else:
         nb_id = find_or_create_notebook(playlist_title)
         print(f"  Notebook ID: {nb_id[:8]}...")
+    print(f"  Working directory: {os.getcwd()}")
+    print()
+    return nb_id
+
+
+def new_notebook_setup(name: str | None, seed_url: str | None) -> str:
+    """Create a Curated notebook from scratch (no source playlist).
+
+    Creates a subfolder in cwd, sets up .notebooklm/ auth, creates the cloud
+    notebook, and writes an index.list whose line-1 `# playlist:\\t\\t` is
+    intentionally left empty (no source playlist). Line 2 (notebook url) and
+    line 3 (notebook title) are populated as usual.
+
+    Exactly one of (name, seed_url) must be provided (both is also fine).
+    If only seed_url is given, name is derived from its video title.
+
+    Returns the bound notebook's UUID. After return, cwd is the new folder
+    with NOTEBOOKLM_HOME pointed at its .notebooklm/.
+    """
+    if not name and not seed_url:
+        print("Error: --new-notebook requires at least a name or a seed video URL",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Derive name from seed video title if name not given.
+    if not name:
+        print("Fetching seed video title to derive notebook name...")
+        raw_title = get_video_title(seed_url)
+        if is_unavailable_video_title(raw_title):
+            print(f"Error: seed video is unavailable ({raw_title!r}); "
+                  f"can't yield a usable name.", file=sys.stderr)
+            print("Provide an explicit <name> or use a reachable seed video.",
+                  file=sys.stderr)
+            sys.exit(1)
+        name = convert_to_traditional(raw_title).strip()
+        if not name:
+            print("Error: could not derive a name from seed video title.",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"  Derived name: {name}")
+
+    # Strip any user-supplied Joshua_ / Joshua / Joshua prefix so we don't
+    # end up with Joshua_Joshua_<name> after we re-prepend below.
+    stripped = name
+    for prefix in ("Joshua_", "Joshua ", "Joshua"):
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix):]
+            break
+    stripped = stripped.strip()
+    if not stripped:
+        print(f"Error: name reduces to empty after stripping 'Joshua' prefix: {name!r}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    full_title = f"Joshua_{stripped}"
+    folder_name = derive_folder_name(full_title)
+    if not folder_name:
+        print(f"Error: sanitized folder name is empty for {full_title!r}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    folder_path = Path(folder_name)
+    if folder_path.exists() and (folder_path / "index.list").exists():
+        print(f"Error: folder {folder_name}/ already has an index.list "
+              f"(managed notebook). Use --add-video instead.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"  Notebook title: {full_title}")
+    print(f"  Folder: {folder_name}/")
+    os.makedirs(folder_name, exist_ok=True)
+    os.chdir(folder_name)
+
+    # Set up .notebooklm/ auth (same pattern as auto_setup).
+    notebooklm_dir = Path(".notebooklm")
+    notebooklm_dir.mkdir(exist_ok=True)
+    storage_src = Path.home() / ".notebooklm" / "storage_state.json"
+    storage_dst = notebooklm_dir / "storage_state.json"
+    if not storage_src.exists():
+        if not storage_dst.exists():
+            print(f"Error: Auth file not found: {storage_src}", file=sys.stderr)
+            print("Run 'notebooklm login' first to authenticate.", file=sys.stderr)
+            sys.exit(1)
+    if not storage_dst.exists():
+        shutil.copy2(storage_src, storage_dst)
+        print(f"  Copied auth to .notebooklm/")
+    elif storage_src.exists() and storage_src.stat().st_mtime > storage_dst.stat().st_mtime:
+        shutil.copy2(storage_src, storage_dst)
+        print(f"  Auth refreshed from {storage_src}")
+    else:
+        print(f"  Auth already exists (up to date)")
+    os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
+
+    # Find or create the cloud notebook with the standardized title.
+    print("Setting up notebook...")
+    nb_id = find_or_create_notebook(full_title)
+    print(f"  Notebook ID: {nb_id[:8]}...")
+
+    # Write index.list headers. Line 1 stays empty (# playlist:\t\t) — this is
+    # the marker for Curated / playlist-less notebooks. We always rewrite so
+    # the empty-playlist header is preserved (update_index_metadata drops
+    # headers whose value is empty).
+    index_file = Path("index.list")
+    existing_body: list[str] = []
+    if index_file.exists():
+        with open(index_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.startswith('#'):
+                    existing_body.append(line)
+                    # Once we hit the first non-header, keep reading the rest verbatim.
+                    for rest in f:
+                        existing_body.append(rest)
+                    break
+    with open(index_file, 'w', encoding='utf-8') as f:
+        f.write("# playlist:\t\t\n")
+        f.write(f"# notebook url:\t\t{build_notebook_url(nb_id)}\n")
+        f.write(f"# notebook title:\t{full_title}\n")
+        f.writelines(existing_body)
+    if existing_body:
+        print(f"  index.list already existed — refreshed headers, preserved body")
+    else:
+        print(f"  Wrote index.list headers (no source playlist)")
+
     print(f"  Working directory: {os.getcwd()}")
     print()
     return nb_id
@@ -2234,7 +2411,7 @@ def add_text_source(txt_file: str, title: str) -> tuple[bool, str]:
     return True, source_id
 
 
-def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dict
+def _match_sources_by_title(sources: list[dict], playlist_url: str | None, new_map: dict
 ) -> tuple[list[tuple], list[tuple]]:
     """Match notebook sources to URLs by comparing titles against YouTube playlist.
 
@@ -2242,35 +2419,44 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dic
     notebook source title against them. Handles sources with or without [NNN] prefix,
     and in simplified or traditional Chinese.
 
+    For Curated-mode notebooks (``playlist_url`` is None/empty), the playlist
+    fetch is skipped; matching falls back to the URL-field (native-url) and
+    ``#URL`` fulltext strategies only.
+
     Returns (rename_plan, unmapped).
     rename_plan: list of (source_id, old_label, new_idx, new_title, url)
     """
-    # Fetch playlist in original form (simplified Chinese)
-    print(f"Fetching playlist titles from YouTube...")
-    success, output = run_command([
-        "yt-dlp", "--flat-playlist",
-        "--print", "%(url)s\t%(title)s",
-        playlist_url
-    ])
-    if not success:
-        print(f"Error: Failed to fetch playlist: {output}", file=sys.stderr)
-        sys.exit(1)
+    title_to_url: dict[str, str] = {}
+    traditional_to_url: dict[str, str] = {}
 
-    # Build simplified_title → url mapping
-    title_to_url = {}  # simplified_title -> url
-    for line in output.split('\n'):
-        line = line.strip()
-        if line:
-            parts = line.split('\t', 1)
-            if len(parts) == 2:
-                url, title = parts
-                title_to_url[title] = url
-    print(f"Playlist titles fetched: {len(title_to_url)}")
+    if not playlist_url:
+        # Curated notebook: no source playlist to fetch from.
+        print("Curated notebook (no source playlist) — matching by URL and #URL only.")
+    else:
+        # Fetch playlist in original form (simplified Chinese)
+        print(f"Fetching playlist titles from YouTube...")
+        success, output = run_command([
+            "yt-dlp", "--flat-playlist",
+            "--print", "%(url)s\t%(title)s",
+            playlist_url
+        ])
+        if not success:
+            print(f"Error: Failed to fetch playlist: {output}", file=sys.stderr)
+            sys.exit(1)
 
-    # Also build Traditional Chinese title → url for matching Traditional sources
-    traditional_to_url = {}
-    for title, url in title_to_url.items():
-        traditional_to_url[convert_to_traditional(title)] = url
+        # Build simplified_title → url mapping
+        for line in output.split('\n'):
+            line = line.strip()
+            if line:
+                parts = line.split('\t', 1)
+                if len(parts) == 2:
+                    url, title = parts
+                    title_to_url[title] = url
+        print(f"Playlist titles fetched: {len(title_to_url)}")
+
+        # Also build Traditional Chinese title → url for matching Traditional sources
+        for title, url in title_to_url.items():
+            traditional_to_url[convert_to_traditional(title)] = url
 
     # Strategy "native-url": URL equality on the source's native `url` field.
     # Native YouTube sources (added via `notebooklm source add <url>`) carry the
@@ -2588,7 +2774,7 @@ def add_single_video(
         return True
 
 
-def sync_tracking_from_notebook(playlist_url: str, index_file: Path,
+def sync_tracking_from_notebook(playlist_url: str | None, index_file: Path,
                                 ok_file: Path, video2txt_file: Path,
                                 cleanup_errors: bool = True) -> tuple[int, int, int]:
     """Scan the currently-bound notebook and record sources already present in
@@ -2646,11 +2832,13 @@ def sync_tracking_from_notebook(playlist_url: str, index_file: Path,
     return ok_count, v2t_count, remaining
 
 
-def reindex_sources(playlist_url: str,
+def reindex_sources(playlist_url: str | None,
                     index_file: Path, ok_file: Path, video2txt_file: Path):
     """Rename notebook sources to match current index.list ordering.
 
-    Matches by title and #URL fulltext against YouTube playlist.
+    Matches by title and #URL fulltext against YouTube playlist. For Curated
+    notebooks (``playlist_url`` is None/empty), matching falls back to URL-
+    field equality and ``#URL`` fulltext only — see ``_match_sources_by_title``.
     Extra sources not in the playlist are left untouched.
     Shows dry-run plan and asks for confirmation before executing.
     """
@@ -2950,18 +3138,24 @@ def _find_folder_by_playlist_url(parent: Path, playlist_url: str) -> Path | None
     return None
 
 
-def find_playlist_folders(start_path: Path) -> list[tuple[Path, str]]:
-    """Find all managed playlist folders under start_path.
-    Returns list of (folder_path, playlist_url) sorted by path."""
-    results = []
+def find_playlist_folders(start_path: Path) -> list[tuple[Path, str | None]]:
+    """Find all playlist folders (Managed and Curated) under start_path.
+
+    Returns list of ``(folder_path, playlist_url)`` sorted by path. For
+    Curated-mode folders (``# playlist:`` is empty), ``playlist_url`` is
+    ``None`` — the caller must branch on that to avoid treating Curated
+    folders as ordinary YouTube-sourced playlists.
+    """
+    results: list[tuple[Path, str | None]] = []
     for dirpath, dirnames, filenames in os.walk(start_path):
         # Skip transcripts directories (may contain unrelated nested projects)
         dirnames[:] = [d for d in dirnames if d != 'transcripts' and not d.startswith('.')]
         if 'index.list' in filenames:
             index_file = Path(dirpath) / 'index.list'
             url = read_playlist_url_from_index(index_file)
-            if url:
-                results.append((Path(dirpath), url))
+            # Include Curated folders (url is None) too — the caller decides
+            # whether to run a full --auto or just --reindex.
+            results.append((Path(dirpath), url))
     results.sort(key=lambda x: str(x[0]))
     return results
 
@@ -3062,10 +3256,17 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
             sys.exit(1)
         print("OK")
 
-    print(f"Updating {total} playlist folder(s) under {path_label}\n")
+    managed_count = sum(1 for _, u in folders if u)
+    curated_count = total - managed_count
+    if curated_count:
+        print(f"Updating {total} folder(s) under {path_label} "
+              f"({managed_count} managed, {curated_count} curated)\n")
+    else:
+        print(f"Updating {total} playlist folder(s) under {path_label}\n")
 
     up_to_date = 0
     updated = 0
+    curated_reindexed = 0  # Curated folders successfully reindexed (no playlist)
     errors = 0
     updated_details = []  # list of (rel_path, [new_video_titles])
     script_path = Path(__file__).resolve()
@@ -3082,9 +3283,17 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
             except ValueError:
                 continue
         rel_path = folder_path.relative_to(matching_root) if matching_root and folder_path != matching_root else folder_path.name
-        header = f"[{i}/{total}] {rel_path}/"
+        mode_tag = " [curated]" if not playlist_url else ""
+        header = f"[{i}/{total}] {rel_path}/{mode_tag}"
 
-        cmd = [sys.executable, str(script_path), "--auto", playlist_url]
+        # Managed folders (have a playlist URL) → full --auto pass.
+        # Curated folders (no playlist URL) → lighter --reindex pass: apply
+        # any fractional reordering and rename sources to match index.list,
+        # but skip playlist re-scan / new-video discovery.
+        if playlist_url:
+            cmd = [sys.executable, str(script_path), "--auto", playlist_url]
+        else:
+            cmd = [sys.executable, str(script_path), "--reindex"]
         if debug:
             cmd.append("--debug")
 
@@ -3145,8 +3354,10 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
 
         # Folder may have been renamed inside the subprocess (when the user
         # changed line 3 of index.list). Rediscover the live path before
-        # writing the log so we don't target a dead inode.
-        if not folder_path.exists():
+        # writing the log so we don't target a dead inode. Only works for
+        # Managed folders (we look it up by playlist URL); Curated folders
+        # would need a different lookup key — skip for now.
+        if not folder_path.exists() and playlist_url:
             new_path = _find_folder_by_playlist_url(folder_path.parent, playlist_url)
             if new_path:
                 if not stream_output:
@@ -3163,6 +3374,12 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
             if not stream_output:
                 print(f"ERROR (exit code {returncode}, see update.log)")
             errors += 1
+        elif not playlist_url:
+            # Curated folder: --reindex only, no new-video signal to parse.
+            # Success is just exit code 0.
+            if not stream_output:
+                print("curated: reindexed")
+            curated_reindexed += 1
         elif "All videos already processed!" in output:
             if not stream_output:
                 count_match = re.search(r'(\d+) completed, 0 remaining', output)
@@ -3219,6 +3436,8 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
     print(f"  Folders checked:    {total}")
     print(f"  Up to date:         {up_to_date}")
     print(f"  Updated:            {updated}")
+    if curated_reindexed > 0:
+        print(f"  Curated reindexed:  {curated_reindexed}")
     if errors > 0:
         print(f"  Errors:             {errors}")
 
@@ -3675,6 +3894,21 @@ Examples:
              "compares canonical forms so youtu.be / watch?v= / shorts variants all match."
     )
     parser.add_argument(
+        "--new-notebook", action="store_true", dest="new_notebook",
+        help="Create a Curated notebook from scratch. Accepts 0-2 positional args: "
+             "an optional <name> (quoted string) and/or an optional <seed_video_url>. "
+             "If only a video URL is given, name auto-derives from the video title. "
+             "Folder is always created in cwd. Companion: --attach-playlist."
+    )
+    parser.add_argument(
+        "--attach-playlist", type=str, metavar="PLAYLIST_URL",
+        dest="attach_playlist",
+        help="Promote a Curated notebook (created by --new-notebook) to Managed by "
+             "writing PLAYLIST_URL into index.list line 1. Optional positional <folder> "
+             "defaults to cwd. Does NOT auto-run --auto afterward — run --auto separately "
+             "to bulk-import the playlist's videos."
+    )
+    parser.add_argument(
         "--text-back-to-video-effort",
         type=str,
         nargs='?',
@@ -3841,6 +4075,155 @@ def main():
             colab_timeout=colab_timeout,
         )
         sys.exit(0 if ok else 1)
+
+    # --attach-playlist: promote a Curated notebook to Managed by writing a
+    # playlist URL into index.list line 1. Does NOT auto-import; user runs
+    # --auto separately when ready.
+    if args.attach_playlist:
+        pl_url = args.attach_playlist.strip()
+        target_path = None
+        for raw in args.positional_args:
+            for piece in raw.split(','):
+                piece = piece.strip()
+                if piece and Path(piece).is_dir():
+                    target_path = str(Path(piece).resolve())
+                    break
+            if target_path:
+                break
+        if target_path:
+            os.chdir(target_path)
+            print(f"Target folder: {target_path}")
+        idx_file = Path("index.list")
+        if not idx_file.exists():
+            print(f"Error: {idx_file} not found in {Path.cwd()} — not a notebook folder.",
+                  file=sys.stderr)
+            sys.exit(1)
+        local_notebooklm = Path(".notebooklm")
+        if not local_notebooklm.is_dir():
+            print(f"Error: {local_notebooklm} not found — folder is not bound to a notebook. "
+                  f"Use --new-notebook or --notebook-url first.", file=sys.stderr)
+            sys.exit(1)
+        os.environ["NOTEBOOKLM_HOME"] = str(local_notebooklm.absolute())
+        current_playlist = read_playlist_url_from_index(idx_file)
+        if current_playlist:
+            print(f"Error: folder already has a source playlist bound "
+                  f"({current_playlist}) — refusing to overwrite. Remove the "
+                  f"# playlist: value manually first if you really want to rebind.",
+                  file=sys.stderr)
+            sys.exit(1)
+        # Validate that PLAYLIST_URL is in fact a playlist (not a bare video).
+        try:
+            pid = extract_playlist_id(pl_url)
+        except SystemExit:
+            print(f"Error: --attach-playlist requires a YouTube playlist URL "
+                  f"(got: {pl_url!r}).", file=sys.stderr)
+            sys.exit(1)
+        canonical_playlist = build_playlist_url(pid)
+        update_index_metadata(idx_file, playlist_url=canonical_playlist)
+        print(f"Attached playlist: {canonical_playlist}")
+        print(f"Curated notebook → Managed. Run --auto now to bulk-import videos "
+              f"from the playlist:")
+        print(f"  manipulate_notebooklm_from_yt_playlist --auto {canonical_playlist!r}")
+        sys.exit(0)
+
+    # --new-notebook: create a Curated notebook from scratch (no source playlist).
+    # Accepts 0-2 positional args: optional <name> and/or optional <seed_video_url>,
+    # order-agnostic and comma-tolerant. Folder is always created in cwd.
+    if args.new_notebook:
+        DEBUG = args.debug
+        AUTO_YES = args.yes
+        # Collect tokens (comma-splitting same as --setup/--notebook-url).
+        nn_tokens: list[str] = []
+        for raw in args.positional_args:
+            for piece in raw.split(','):
+                piece = piece.strip()
+                if piece:
+                    nn_tokens.append(piece)
+
+        nn_name: str | None = None
+        nn_seed: str | None = None
+        for tok in nn_tokens:
+            kind, value = classify_setup_arg(tok)
+            if kind == 'playlist':
+                print(f"Error: {tok!r} looks like a playlist URL. "
+                      f"Use --setup for playlist-based notebooks.", file=sys.stderr)
+                sys.exit(1)
+            elif kind == 'notebook':
+                print(f"Error: {tok!r} looks like a NotebookLM notebook URL/UUID. "
+                      f"Use --notebook-url to bind an existing notebook.",
+                      file=sys.stderr)
+                sys.exit(1)
+            elif kind == 'path':
+                print(f"Error: \"{tok}\" is a directory; --new-notebook takes "
+                      f"only a name and/or a seed video URL (parent is always cwd).",
+                      file=sys.stderr)
+                sys.exit(1)
+            elif kind == 'video':
+                if nn_seed and nn_seed != value:
+                    print("Error: --new-notebook accepts at most one seed video.",
+                          file=sys.stderr)
+                    sys.exit(1)
+                nn_seed = value
+            elif kind == 'name':
+                if nn_name and nn_name != value:
+                    print(f"Error: Ambiguous: two non-URL tokens "
+                          f"({nn_name!r}, {value!r}); quote the intended name.",
+                          file=sys.stderr)
+                    sys.exit(1)
+                nn_name = value
+            else:
+                print(f"Error: Unrecognized --new-notebook argument: {tok!r}",
+                      file=sys.stderr)
+                sys.exit(1)
+
+        if not nn_name and not nn_seed:
+            print("Error: --new-notebook requires at least a name or a seed video URL",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        nb_id_new = new_notebook_setup(nn_name, nn_seed)
+
+        # If a seed URL was provided, upload it through the same pipeline as
+        # --add-video (native YouTube import → whisper fallback chain).
+        if nn_seed:
+            index_file = Path("index.list")
+            ok_file = Path("add_source_ok.txt")
+            video2txt_file = Path("add_source_video2txt.txt")
+            transcripts_dir = Path("transcripts")
+
+            # Whisper fallback configuration (mirror --add-video).
+            colab_url = args.colab_url
+            colab_timeout = args.colab_timeout
+            local_fallback = not args.no_local_fallback
+            remote_sshfs = (None if args.no_remote_sshfs
+                            else parse_remote_sshfs(args.remote_sshfs))
+            sshfs_mount_point = transcripts_dir / "remote_sshfs"
+            sshfs_config = None
+            ssh_config = None
+            if remote_sshfs:
+                ssh_user, ssh_host, remote_path = remote_sshfs
+                print(f"Mounting SSHFS...")
+                if mount_sshfs(ssh_user, ssh_host, remote_path, sshfs_mount_point):
+                    sshfs_config = (sshfs_mount_point, ssh_user, ssh_host, remote_path)
+                    atexit.register(unmount_sshfs, sshfs_mount_point)
+                else:
+                    print(f"  SSHFS mount failed, will use direct SSH method instead")
+                    ssh_config = (ssh_user, ssh_host, remote_path)
+
+            print(f"Adding seed video: {nn_seed}")
+            add_single_video(
+                nn_seed, index_file, ok_file, video2txt_file, transcripts_dir,
+                max_retries=args.retry,
+                use_whisper=not args.without_whisper,
+                colab_url=colab_url,
+                sshfs_config=sshfs_config,
+                ssh_config=ssh_config,
+                local_fallback=local_fallback,
+                colab_timeout=colab_timeout,
+            )
+
+        print(f"New notebook ready: {nb_id_new}")
+        sys.exit(0)
 
     # Extract URL from positional args (first positional arg when not --update)
     args.url = args.positional_args[0] if args.positional_args else None
@@ -4020,11 +4403,13 @@ def main():
 
     # --reindex (standalone): rename existing sources to match current index.list, then exit
     if args.reindex and not args.auto:
-        playlist_url_for_reindex = read_playlist_url_from_index(index_file)
-        if not playlist_url_for_reindex:
-            print("Error: Cannot read playlist URL from index.list", file=sys.stderr)
+        if not index_file.exists():
+            print(f"Error: {index_file} not found.", file=sys.stderr)
             print("Run --list-only first to create a sorted index.list.", file=sys.stderr)
             sys.exit(1)
+        # Curated-mode notebooks have no playlist URL — pass None and let
+        # reindex_sources / _match_sources_by_title match by URL + #URL only.
+        playlist_url_for_reindex = read_playlist_url_from_index(index_file)
         reindex_sources(playlist_url_for_reindex,
                         index_file, ok_file, video2txt_file)
         sys.exit(0)

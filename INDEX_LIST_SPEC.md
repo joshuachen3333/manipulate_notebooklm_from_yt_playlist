@@ -18,7 +18,7 @@ Three header lines (tab-separated after the colon) followed by tab-separated vid
 
 Separator between header key and value is **two tabs** for lines 1–2, **one tab** for line 3.
 
-- **Line 1** (`# playlist:`) — source YouTube playlist. Used to regenerate entries and to derive folder name on first create.
+- **Line 1** (`# playlist:`) — source YouTube playlist. Used to regenerate entries and to derive folder name on first create. **Empty value (`# playlist:\t\t` with nothing after the tabs) signals Curated mode** — see §11 below.
 - **Line 2** (`# notebook url:`) — full NotebookLM URL (`https://notebooklm.google.com/notebook/<uuid>`). Records the current binding.
 - **Line 3** (`# notebook title:`) — user-editable source of truth for the notebook title. Also determines the folder name.
 
@@ -143,4 +143,63 @@ This means custom-named folders survive indefinite `--update` runs.
 | `standardize_folder_and_notebook(playlist_title, idx)` | Seed lines 2/3 if missing; rename cloud + folder |
 | `backfill_index_metadata(idx)`        | Append missing lines 2/3 for legacy files (no rename) |
 | `extract_notebook_id(url_or_uuid)`    | Accept URL or bare UUID → UUID                 |
-| `classify_setup_arg(arg)`             | `'notebook' | 'playlist' | 'path' | 'unknown'` |
+| `classify_setup_arg(arg)`             | `'notebook' \| 'playlist' \| 'video' \| 'path' \| 'name' \| 'unknown'` |
+| `new_notebook_setup(name, seed_url)`  | Bootstrap a Curated notebook (§11) |
+
+## 11. Curated vs Managed notebooks
+
+Added 2026-04-18 with the `--new-notebook` / `--attach-playlist` commands.
+
+A notebook is either:
+
+| Mode | Line 1 (`# playlist:`) | Created via | Typical source |
+|------|------------------------|-------------|----------------|
+| **Managed** | non-empty URL | `--setup`, `--auto` | YouTube source playlist; `--update` re-scans the playlist for new videos |
+| **Curated** | empty | `--new-notebook` | Hand-curated theme collection; videos added one-by-one via `--add-video`; `--update` does a *light* pass (reindex + sync tracking only, no playlist re-scan) |
+
+### Bootstrap a Curated notebook
+
+```
+# Empty notebook, named manually
+manipulate_notebooklm_from_yt_playlist --new-notebook "日內交易直播"
+
+# Seeded with one video; name auto-derives from the video title
+manipulate_notebooklm_from_yt_playlist --new-notebook "https://youtu.be/abc123"
+
+# Both, in any order (comma/space tolerant)
+manipulate_notebooklm_from_yt_playlist --new-notebook "日內交易直播" "https://youtu.be/abc123"
+```
+
+Folder is **always** created in cwd. Run from the directory where you want the notebook to live.
+
+### Grow a Curated notebook
+
+Every addition after bootstrap uses `--add-video` (which already supports the `source='extra'` marker):
+
+```
+cd 日內交易直播
+manipulate_notebooklm_from_yt_playlist --add-video "https://youtu.be/XYZ"
+```
+
+### Promote Curated → Managed
+
+If you later discover a YouTube playlist you want to bulk-import into the same notebook:
+
+```
+cd 日內交易直播
+manipulate_notebooklm_from_yt_playlist --attach-playlist "https://youtube.com/playlist?list=PLxxx"
+# Then bulk-import:
+manipulate_notebooklm_from_yt_playlist --auto "https://youtube.com/playlist?list=PLxxx"
+```
+
+`--attach-playlist` only writes line 1; the `--auto` run fills in the new rows. Existing `source='extra'` rows are preserved.
+
+### Behavioral differences
+
+- **`--update`** scans all folders with `index.list` regardless of mode. Managed folders get the full `--auto` treatment (re-scan playlist, add new videos). Curated folders get `--reindex` only (apply any fractional-index reordering the user did).
+- **`_match_sources_by_title`** skips the playlist-title fetch when line 1 is empty; relies solely on URL-equality and `#URL` fulltext matching.
+- **`find_playlist_folders`** returns Curated folders too (url = None for those), so `--update` discovers them.
+
+### One-way contract
+
+Line 1 is the "sync contract." Once you promote a folder from Curated to Managed via `--attach-playlist`, you can't trivially go back without manually editing `index.list`. The tool doesn't offer `--detach-playlist` — removing the sync source is rare and should be a conscious manual act.

@@ -102,6 +102,16 @@ python3 manipulate_notebooklm_from_yt_playlist.py --add-video "https://youtu.be/
 python3 manipulate_notebooklm_from_yt_playlist.py --add-video "https://youtu.be/XYZ" /path/folder # explicit folder
 python3 manipulate_notebooklm_from_yt_playlist.py /path/folder --add-video "https://youtu.be/XYZ" # same (order-agnostic)
 
+# Create a Curated notebook from scratch (no source playlist). Folder is always created in cwd.
+python3 manipulate_notebooklm_from_yt_playlist.py --new-notebook "日內交易直播"                  # empty
+python3 manipulate_notebooklm_from_yt_playlist.py --new-notebook "https://youtu.be/XYZ"          # name auto-derived
+python3 manipulate_notebooklm_from_yt_playlist.py --new-notebook "日內交易直播" "https://youtu.be/XYZ"  # both, any order, comma OK
+
+# Promote a Curated notebook to Managed by attaching a source playlist
+python3 manipulate_notebooklm_from_yt_playlist.py --attach-playlist "https://...playlist?list=PLxxx"  # cwd
+python3 manipulate_notebooklm_from_yt_playlist.py --attach-playlist "https://..." /path/folder         # explicit folder
+# (Then run --auto separately to bulk-import the playlist's videos)
+
 # Try to replace whisper text sources with native YouTube sources
 python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort          # all text sources
 python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort "https://..." # specific URL

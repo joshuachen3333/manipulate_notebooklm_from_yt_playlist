@@ -445,3 +445,51 @@ Did these myself after agents returned, since they're each one-liners:
 - Parallel agents work well on the same file as long as each is scoped to a distinct function.
 - Deferring one small step (URL normalization in add_single_video) to an inline pass after parallel agents was the right call to avoid lock-wrap collision.
 - Owls review + parallel-agent followup is a powerful two-skill combo — owls surfaces issues Claude-alone misses, parallel agents tackle them concurrently. Worth reaching for on any non-trivial commit.
+
+## 11. [2026-04-18] Private-video skip + smoke test + repo hygiene + RED-phase validation
+
+Four-pack cleanup after the owls-led refactor landed:
+
+Prompts:
+- "anything to implement?"
+- "all 4 of them"
+
+### 11a. Private / deleted / unavailable video pre-flight skip
+Earlier in session (entry #3's SSH trace) a `_Private video_` burned through 3 retries + 2 whisper-download failures × 2 attempts before giving up — minutes wasted per such entry. YouTube shows `"Private video"`, `"Deleted video"`, `"Video unavailable"`, `"Members only video"`, `"Age-restricted video"` etc. as playlist placeholders for inaccessible content; the video ID still resolves but no content can be fetched.
+
+New `is_unavailable_video_title(title)` helper detects these patterns (case-insensitive, tolerates square-bracket decoration). Wired into:
+- `add_single_video`: short-circuits after `get_video_title()` returns a placeholder → writes nothing, returns False.
+- Main upload loop: filters unavailable entries out of `pending_entries` BEFORE claiming indices, records them to `add_source_skip.txt`, prints a clear "Skipped N unavailable video(s)" notice with titles.
+
+### 11b. `.gitignore` stray files
+Added patterns for user-scratch files that have been sitting untracked for months: `NBLM_prompt`, `colab_commands`, `command.md`, `command_last_working_ok`, `prompt`, `reboot_over_and_over.md`. Also caught: `*.swp` / `*.swo` (vim swap), `.DS_Store` (macOS), `add_source_working.lock`, and the council-artifact files (`3-ai-owls-council.md`, `3-ai-dogs-debate.md`) that regenerate per run.
+
+`git status` now shows a clean two-file working set instead of a seven-file nag.
+
+### 11c. Smoke-test of `--add-video` (first real-world run)
+Added `https://www.youtube.com/watch?v=spUNpyF58BY` (3Blue1Brown's "But what is the Fourier Transform?") to `Algorithmic_Trading_Educational_Series/` (thematically adjacent — Fourier ↔ signal processing ↔ quant). Test target was the stray notebook `7ccd5375` from the earlier binding-bug investigation — safe to experiment on.
+
+Result: **7-second end-to-end success**:
+- Native YouTube add succeeded first try (no whisper fallback needed).
+- `index.list` line 16 appended with `source='extra'` marker and the new 5-column padded schema. Visual column alignment correct.
+- `add_source_ok.txt` line 16 recorded with elapsed=7s.
+- `add_source_working.lock` created and released (lock wrap working).
+- Atomicity confirmed: log printed "Appended to index.list..." THEN "SUCCESS [YouTube]..." — index.list append precedes tracking-file write, per the owls-fix.
+
+Every recent code change that touches the add-video path was exercised and passed. First real production use of the feature.
+
+### 11d. RED-phase TDD for `3-ai-dogs-debate` and `3-ai-owls-council` skills
+Dispatched two parallel general-purpose subagents as blank-slate naive testers, each given one of the skill's canonical tasks WITHOUT the skill content loaded. The goal: see what a fresh agent does wrong, then use those gaps to strengthen the skills.
+
+Finding: **both agents failed to complete their tasks** inside tool budget. Both attempted inline-subprocess orchestration (calling `gemini -p`/`codex exec` as synchronous tool calls turn-by-turn) and got trapped waiting on CLI reply time.
+
+- Dogs-debate tester: created a log header at `/tmp/red_phase_dogs_debate.md` (336 bytes, 13 lines), got as far as the "## Round 1" heading, then exited without filling content. Mentioned trying to "wait via scheduled wakeup" — evidence of the synchronous-wait trap.
+- Owls-council tester: didn't even create its output file; returned after 53s / 11 tool uses with "Codex is still thinking. Let me wait for completion."
+
+Both SKILL.md files had this added to their Known Gaps section: a dated record of the RED test, its outcome, and the specific takeaway — "the driver-script + `run_in_background=true` pattern is mandatory, not optional." Future invocations of the skills now have a verified datapoint supporting the core architectural recommendation.
+
+The RED phase doubles as evidence that the skills ARE valuable: without them, even a capable general-purpose agent can't complete the task correctly inside normal tool budgets. The skill's existence materially changes the outcome.
+
+### 11e. Skipped (deliberately)
+- Owls blocker #7 (disputed index-collision edge) — I agreed with Codex against Gemini on this one; low construction likelihood, not worth guard code.
+- Further iterating the two skills from the RED findings (beyond documenting them) — acceptable as-is; the docs already emphasize the driver-script path, Known Gaps now has evidence.

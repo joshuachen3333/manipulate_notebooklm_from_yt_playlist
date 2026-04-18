@@ -3,5 +3,23 @@ __pycache__/
 add_source_ok.txt
 add_source_video2txt.txt
 add_source_skip.txt
+add_source_working.lock
 index.list
 transcripts/
+
+# Editor swap / scratch
+*.swp
+*.swo
+.DS_Store
+
+# Local working / scratch files (not part of the project spec)
+NBLM_prompt
+colab_commands
+command.md
+command_last_working_ok
+prompt
+reboot_over_and_over.md
+
+# Owls council / debate review artifacts (regenerated per run, not part of spec)
+3-ai-owls-council.md
+3-ai-dogs-debate.md

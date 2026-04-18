@@ -256,6 +256,23 @@ def get_playlist_videos(playlist_url: str) -> list[tuple[str, str]]:
     return results
 
 
+def is_unavailable_video_title(title: str) -> bool:
+    """Detect YouTube placeholder titles that mean the video can't be fetched.
+    These show up in playlist metadata when a video has been made private,
+    deleted, removed for copyright, or is members-only. Trying to add such a
+    URL always burns through all retries + whisper download attempts before
+    giving up — short-circuit here instead."""
+    t = (title or "").strip().strip('[]').strip().lower()
+    return t in {
+        "private video",
+        "deleted video",
+        "unavailable video",
+        "members only video",
+        "video unavailable",
+        "age-restricted video",
+    } or t.startswith("private video ") or t.startswith("deleted video ")
+
+
 def add_source(url: str) -> tuple[bool, str, str]:
     """Add a YouTube URL as source. Returns (success, source_id, title)."""
     success, output = run_command(
@@ -2452,6 +2469,12 @@ def add_single_video(
         title = convert_to_traditional(raw_title)
         print(f"  Title: {title}")
 
+        # Short-circuit for YouTube placeholder titles (private/deleted/unavailable).
+        # These will always fail the add + whisper download and waste retries.
+        if is_unavailable_video_title(raw_title):
+            print(f"  SKIPPED: unavailable video ({raw_title!r})", file=sys.stderr)
+            return False
+
         print(f"\nAdding #{new_idx}: {video_url}")
         cleanup_error_sources(silent=True)
         t0 = time.time()
@@ -4206,6 +4229,19 @@ def main():
         skipped_count = before_count - len(pending_entries)
         if skipped_count > 0:
             print(f"Skipped {skipped_count} entries by --skip filter")
+
+    # Filter out videos that YouTube has marked private/deleted/unavailable.
+    # These always fail every retry + whisper download; skipping upfront saves
+    # minutes per such entry. Record to skip_file so --update summary shows them.
+    unavailable = [(idx, u, t) for idx, u, t in pending_entries if is_unavailable_video_title(t)]
+    if unavailable:
+        pending_entries = [(idx, u, t) for idx, u, t in pending_entries if not is_unavailable_video_title(t)]
+        with open(skip_file, 'a', encoding='utf-8') as f:
+            for idx, u, t in unavailable:
+                f.write(f"{idx} {u}\n")
+        print(f"Skipped {len(unavailable)} unavailable video(s) (private/deleted):")
+        for idx, _u, t in unavailable:
+            print(f"  #{idx}: {t}")
 
     # Filter out indices being processed by other sessions
     working_indices = load_working_indices(lock_file)

@@ -20,7 +20,10 @@ command_last_working_ok
 prompt
 reboot_over_and_over.md
 
-# Owls council / debate review artifacts (regenerated per run, not part of spec)
+# Owls council / debate session folders (regenerated per run, not part of spec)
+3_ai_owls_council/
+3_ai_dogs_debate/
+# Legacy fixed-name logs from before the per-session-folder scheme
 3-ai-owls-council.md
 3-ai-dogs-debate.md
 

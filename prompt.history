@@ -621,3 +621,30 @@ Both owls approved the rename but picked a slightly different name: **`--bind-no
 
 ### 13d. Owls meta-observation
 This was the 4th owls council in this session, all on naming/shape/design questions. They've reliably saved me from at least one bad call per session. The pattern holding: **when in doubt about CLI surface, spend 2 minutes on an owls council rather than picking inside my own head.**
+
+## 14. [2026-04-19] Per-session folders for owls/dogs: `3_ai_owls_council/` + `3_ai_dogs_debate/`
+
+User pointed out a usability issue with both `3-ai-owls-council` and `3-ai-dogs-debate` skills: driver scripts were dumped in `/tmp` (ephemeral, lost on reboot) and logs overwrote a single fixed-name file per run (no history, can't trace past sessions).
+
+Prompts:
+- "for 3 owls, you put the python plan script at /tmp and the conversation log at a fixed same file name. put all of them in cwd/3_ai_owl_council/ (forgot the exact name) and avoid the same file names, so that we can trace every 3 owls session's talk."
+- "for a project folder, I will have only one 3_ai_owls_council/ and 3_ai_dogs_debate/, right? ... independent to owls', right?"
+
+### 14a. New per-session scheme
+Both skills now write to `cwd/3_ai_owls_council/` and `cwd/3_ai_dogs_debate/` respectively. Each session creates a timestamped pair:
+- `YYYYMMDD_HHMMSS.md` — the full log (PROPOSAL + every round's reply + synthesis)
+- `YYYYMMDD_HHMMSS.py` — a copy of the driver script as it ran
+
+So `ls 3_ai_owls_council/` shows every council the project has ever hosted, chronologically sortable. Same for dogs.
+
+Both folders are project-independent siblings — one of each per project. Neither shares content with the other.
+
+### 14b. Skill template changes (outside this repo, in `~/.claude/skills/`)
+- `driver_template.py` (both skills): LOG and `_DRIVER_COPY` paths auto-computed at runtime from `time.strftime('%Y%m%d_%H%M%S')` + cwd subfolder. `main()` opens with `shutil.copy2(__file__, _DRIVER_COPY)` so the driver-as-used is preserved alongside the log.
+- `SKILL.md` (both skills): Parameters table + Driver Script section rewritten to document the new path scheme, explicit `.gitignore` guidance, and the rationale for per-session preservation.
+
+### 14c. Repo change
+- `.gitignore`: replaced the stale fixed-name `3-ai-owls-council.md` / `3-ai-dogs-debate.md` entries with folder patterns `3_ai_owls_council/` and `3_ai_dogs_debate/` (kept the old entries too for legacy-file cleanup). Nothing else in the repo changes — the skill updates live in `~/.claude/skills/` and aren't part of this project.
+
+### 14d. Naming choice
+Folder names use plural + underscore form (`3_ai_owls_council/`, `3_ai_dogs_debate/`) to match the skill names' semantics while being filesystem-friendly. User suggested singular (`3_ai_owl_council`) but said they "forgot the exact name"; plural matches the skill names directly so I went with plural.

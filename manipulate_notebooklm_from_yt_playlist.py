@@ -27,6 +27,7 @@ import time
 import argparse
 import shutil
 import os
+import math
 import unicodedata
 from urllib.parse import urlparse, parse_qs
 from difflib import SequenceMatcher
@@ -102,6 +103,60 @@ def extract_playlist_id(url: str) -> str | None:
 def build_playlist_url(playlist_id: str) -> str:
     """Build a canonical playlist URL from playlist ID."""
     return f"https://www.youtube.com/playlist?list={playlist_id}"
+
+
+def normalize_youtube_url(url: str) -> str:
+    """Return a canonical `https://www.youtube.com/watch?v=<ID>` form for any
+    recognized YouTube video URL. If the URL isn't a recognized YouTube video
+    URL, return it unchanged (never raise)."""
+    if not url:
+        return url
+    raw = url.strip()
+    if not raw:
+        return raw
+
+    # Add a scheme if missing so urlparse treats it as a URL, not a path
+    to_parse = raw
+    if "://" not in to_parse:
+        to_parse = "https://" + to_parse
+
+    try:
+        parsed = urlparse(to_parse)
+    except Exception:
+        return raw
+
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+
+    # youtu.be/<ID>
+    if host == "youtu.be":
+        vid = path.lstrip("/").split("/", 1)[0]
+        if vid:
+            return f"https://www.youtube.com/watch?v={vid}"
+        return raw
+
+    # youtube.com / www.youtube.com / m.youtube.com
+    if host in ("youtube.com", "www.youtube.com", "m.youtube.com"):
+        # /shorts/<ID>
+        if path.startswith("/shorts/"):
+            vid = path[len("/shorts/"):].split("/", 1)[0]
+            if vid:
+                return f"https://www.youtube.com/watch?v={vid}"
+            return raw
+        # /watch?v=<ID>
+        if path == "/watch":
+            try:
+                qs = parse_qs(parsed.query)
+            except Exception:
+                return raw
+            v_list = qs.get("v")
+            if v_list:
+                vid = v_list[0]
+                if vid:
+                    return f"https://www.youtube.com/watch?v={vid}"
+            return raw
+
+    return raw
 
 
 def run_command(cmd: list[str], capture_json: bool = False, _retried_auth: bool = False) -> tuple[bool, str | dict]:
@@ -323,6 +378,34 @@ def record_success_url(index: int, url: str, elapsed_seconds: int, ok_file: Path
         f.write(f"{index} {url} {elapsed_seconds}\n")
 
 
+def _exclusive_file_lock(lock_path: Path):
+    """Process-level exclusive advisory lock on lock_path (Unix fcntl).
+
+    Returned as a context manager. Creates the file if missing. Blocks until
+    acquired, releases on exit (normal or exception). Used to serialize
+    critical sections across concurrent invocations of the script in the
+    same working directory (e.g. two `--add-video` runs racing on
+    index.list / tracking file appends).
+    """
+    from contextlib import contextmanager
+    import fcntl
+
+    @contextmanager
+    def _cm():
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, 'a+')
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
+    return _cm()
+
+
 def load_working_indices(lock_file: Path) -> set[int]:
     """Load indices currently being processed by other sessions."""
     if not lock_file.exists():
@@ -518,6 +601,12 @@ def _pad_to_visual_width(s: str, width: int) -> str:
     return s + ' ' * (width - current)
 
 
+def _sanitize_tsv_field(s: str) -> str:
+    """Defensive: neutralize TSV-breaking chars in a title/source field.
+    Replaces tabs with a single space and drops CR/LF entirely."""
+    return s.replace('\t', ' ').replace('\n', '').replace('\r', '')
+
+
 def format_index_entry_line(idx: int | float, url: str, title: str,
                              source: str = "", date: str = "") -> str:
     """Format one index.list data row using the current schema.
@@ -526,6 +615,8 @@ def format_index_entry_line(idx: int | float, url: str, title: str,
     emits the full 5-column padded form so downstream columns line up.
     Trailing newline is included.
     """
+    title = _sanitize_tsv_field(title)
+    source = _sanitize_tsv_field(source)
     title_field = f'"{title}"'
     if not source and not date:
         return f'{idx}\t{url}\t{title_field}\n'
@@ -2164,18 +2255,27 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dic
     for title, url in title_to_url.items():
         traditional_to_url[convert_to_traditional(title)] = url
 
-    # Strategy -1: URL equality on the source's native `url` field.
+    # Strategy "native-url": URL equality on the source's native `url` field.
     # Native YouTube sources (added via `notebooklm source add <url>`) carry the
     # URL in the source record; if it matches any index.list row's URL, that's a
     # definitive match regardless of whether the row came from the source
     # playlist or was added via `--add-video`. This is what lets reindex
     # correctly reorder manually-added ("extra") entries.
     url_from_source_url: dict[str, str] = {}  # source_id -> url
+    # Build a normalized-URL lookup once so that e.g. youtu.be/XXX and
+    # www.youtube.com/watch?v=XXX match as the same video.
+    normalized_new_map: dict[str, str] = {
+        normalize_youtube_url(u): u for u in new_map.keys()
+    }
     for s in sources:
         source_id = s.get("id")
         source_url = (s.get("url") or "").strip()
-        if source_url and source_url in new_map:
-            url_from_source_url[source_id] = source_url
+        if not source_url:
+            continue
+        canonical = normalize_youtube_url(source_url)
+        original = normalized_new_map.get(canonical)
+        if original:
+            url_from_source_url[source_id] = original
     if url_from_source_url:
         print(f"Native-URL matches: {len(url_from_source_url)}")
 
@@ -2211,7 +2311,7 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dic
         source_id = s.get("id")
         source_title = s.get("title", "")
 
-        # Strategy -1: URL-field equality on native YouTube sources (most direct).
+        # Strategy "native-url": URL-field equality on native YouTube sources (most direct).
         # Strategy 0: #URL fulltext match (highest priority for whisper text sources).
         url = url_from_source_url.get(source_id) or url_from_fulltext.get(source_id)
 
@@ -2294,10 +2394,8 @@ def add_single_video(
       6. Record in tracking file and append one row to index.list with
          source=source_marker (default "extra").
 
-    Returns True on success (including silent-skip for already-tracked URLs).
+    Returns True on success (including skip-with-message for already-tracked URLs).
     """
-    import math
-
     if not index_file.exists():
         print(f"Error: {index_file} not found in {Path.cwd()} — not a managed notebook folder.",
               file=sys.stderr)
@@ -2311,144 +2409,160 @@ def add_single_video(
         return False
     print(f"Notebook: {notebook_title} ({notebook_id[:8]}...)")
 
-    # Duplicate detection across all tracking sources
-    ok_urls = load_ok_urls(ok_file)
-    v2t_urls = load_video2txt_urls(video2txt_file)
-    existing_urls: set[str] = set()
-    max_idx_f = 0.0
-    with open(index_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            entry = parse_index_entry_line(line)
-            if entry:
-                existing_urls.add(entry['url'])
-                if entry['idx'] > max_idx_f:
-                    max_idx_f = entry['idx']
+    # Serialize the entire remaining critical section against concurrent
+    # `--add-video` invocations in the same folder. Without this lock, two
+    # parallel runs could read the same max_idx_f, compute the same new_idx,
+    # and race on index.list / tracking-file appends (torn lines, duplicate
+    # indices). Held across the upload + whisper fallback — slightly
+    # pessimistic (long hold while whisper runs) but bulletproof; callers
+    # running in parallel will queue up rather than corrupt state.
+    with _exclusive_file_lock(Path("add_source_working.lock")):
+        # Duplicate detection across all tracking sources. Compare canonical
+        # YouTube URLs so variants like `youtu.be/X`, `watch?v=X&list=Y`, and
+        # `m.youtube.com/watch?v=X` all match.
+        ok_urls = load_ok_urls(ok_file)
+        v2t_urls = load_video2txt_urls(video2txt_file)
+        existing_urls: set[str] = set()
+        max_idx_f = 0.0
+        with open(index_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                entry = parse_index_entry_line(line)
+                if entry:
+                    existing_urls.add(entry['url'])
+                    if entry['idx'] > max_idx_f:
+                        max_idx_f = entry['idx']
 
-    if video_url in ok_urls or video_url in v2t_urls or video_url in existing_urls:
-        print(f"Already tracked / present: {video_url}")
-        print(f"Skipping (no re-add). Remove the line from index.list + tracking "
-              f"files manually if you really want a fresh upload.")
+        canonical_video = normalize_youtube_url(video_url)
+        canonical_tracked = {
+            normalize_youtube_url(u) for u in (ok_urls | v2t_urls | existing_urls)
+        }
+        if canonical_video in canonical_tracked:
+            print(f"Already tracked / present: {video_url}")
+            if canonical_video != video_url.strip():
+                print(f"  (matched canonical form: {canonical_video})")
+            print(f"Skipping (no re-add). Remove the line from index.list + tracking "
+                  f"files manually if you really want a fresh upload.")
+            return True
+
+        new_idx = math.floor(max_idx_f) + 1
+
+        # Fetch title upfront (used for whisper filenames + fallback display title)
+        print(f"Fetching video title...")
+        raw_title = get_video_title(video_url)
+        title = convert_to_traditional(raw_title)
+        print(f"  Title: {title}")
+
+        print(f"\nAdding #{new_idx}: {video_url}")
+        cleanup_error_sources(silent=True)
+        t0 = time.time()
+
+        native_success = False
+        last_error = ""
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                print(f"  RETRY {attempt}/{max_retries}...")
+                time.sleep(2)
+
+            success, output = run_command(
+                ["notebooklm", "source", "add", "--json", video_url],
+                capture_json=True,
+            )
+            if not success or (isinstance(output, dict) and output.get("error")):
+                last_error = (output.get("message", str(output))
+                              if isinstance(output, dict) else str(output))
+                print(f"  Add failed: {last_error[:200]}")
+                cleanup_error_sources(silent=True)
+                continue
+
+            source = output.get("source", {}) if isinstance(output, dict) else {}
+            source_id = source.get("id", "") or output.get("source_id", "")
+            if not source_id:
+                last_error = "no source_id in add response"
+                print(f"  {last_error}")
+                continue
+
+            wait_ok, status = wait_for_source_with_status(source_id)
+            if not wait_ok:
+                last_error = f"processing failed: {status}"
+                print(f"  {last_error}")
+                cleanup_error_sources(silent=True)
+                continue
+
+            # Capture NotebookLM's auto-fetched title for a better [NNN] rename
+            sl_ok, sl_out = run_command(
+                ["notebooklm", "source", "list", "--json"], capture_json=True)
+            if sl_ok and isinstance(sl_out, dict):
+                for s in sl_out.get("sources", []):
+                    if s.get("id") == source_id:
+                        ft = s.get("title", "")
+                        if ft:
+                            title = convert_to_traditional(ft)
+                        break
+
+            indexed = format_title_with_index(new_idx, title)
+            rename_ok = rename_source(source_id, indexed)
+            if not rename_ok:
+                print(f"  ⚠ rename_source failed for {source_id} — title will be "
+                      f"reconciled on next --reindex", file=sys.stderr)
+            elapsed = int(time.time() - t0)
+            # Atomicity: append to index.list FIRST, then record tracking.
+            # If the index.list append fails → bail out before writing the tracking
+            # file (user can retry cleanly). If index.list succeeds but tracking
+            # write fails later → --reindex / sync_tracking_from_notebook will
+            # self-heal the tracking line from the index.list row.
+            try:
+                with open(index_file, 'a', encoding='utf-8') as f:
+                    f.write(format_index_entry_line(
+                        new_idx, video_url, title, source=source_marker, date="",
+                    ))
+            except Exception as e:
+                print(f"  ERROR: failed to append to {index_file}: {e}", file=sys.stderr)
+                return False
+            print(f"  Appended to {index_file} with source={source_marker!r}")
+            record_success_url(new_idx, video_url, elapsed, ok_file)
+            print(f"  SUCCESS [YouTube]: {indexed} ({elapsed}s)")
+            native_success = True
+            break
+
+        if not native_success:
+            if not use_whisper:
+                print(f"  All retries exhausted; whisper disabled. Failed.")
+                return False
+            print(f"  All retries exhausted. Trying whisper fallback...")
+            ok_w, result = do_whisper_transcription(
+                video_url, title, transcripts_dir,
+                colab_url=colab_url,
+                sshfs_config=sshfs_config,
+                ssh_config=ssh_config,
+                local_fallback=local_fallback,
+                colab_timeout=colab_timeout,
+            )
+            if not ok_w:
+                print(f"  Whisper failed: {result}")
+                return False
+            indexed = format_title_with_index(new_idx, title)
+            add_ok, text_source_id = add_text_source(result, indexed)
+            if not add_ok:
+                print(f"  Failed to add text source: {text_source_id}")
+                return False
+            elapsed = int(time.time() - t0)
+            # Atomicity: append to index.list FIRST, then record tracking.
+            # Same rationale as native path above — if the append fails we bail
+            # before writing the tracking file; if tracking fails later, reindex
+            # rediscovers the row from index.list.
+            try:
+                with open(index_file, 'a', encoding='utf-8') as f:
+                    f.write(format_index_entry_line(
+                        new_idx, video_url, title, source=source_marker, date="",
+                    ))
+            except Exception as e:
+                print(f"  ERROR: failed to append to {index_file}: {e}", file=sys.stderr)
+                return False
+            print(f"  Appended to {index_file} with source={source_marker!r}")
+            record_video2txt_url(new_idx, video_url, elapsed, video2txt_file)
+            print(f"  SUCCESS [Whisper]: {indexed} ({elapsed}s)")
+
         return True
-
-    new_idx = math.floor(max_idx_f) + 1
-
-    # Fetch title upfront (used for whisper filenames + fallback display title)
-    print(f"Fetching video title...")
-    raw_title = get_video_title(video_url)
-    title = convert_to_traditional(raw_title)
-    print(f"  Title: {title}")
-
-    print(f"\nAdding #{new_idx}: {video_url}")
-    cleanup_error_sources(silent=True)
-    t0 = time.time()
-
-    native_success = False
-    last_error = ""
-    for attempt in range(max_retries + 1):
-        if attempt > 0:
-            print(f"  RETRY {attempt}/{max_retries}...")
-            time.sleep(2)
-
-        success, output = run_command(
-            ["notebooklm", "source", "add", "--json", video_url],
-            capture_json=True,
-        )
-        if not success or (isinstance(output, dict) and output.get("error")):
-            last_error = (output.get("message", str(output))
-                          if isinstance(output, dict) else str(output))
-            print(f"  Add failed: {last_error[:200]}")
-            cleanup_error_sources(silent=True)
-            continue
-
-        source = output.get("source", {}) if isinstance(output, dict) else {}
-        source_id = source.get("id", "") or output.get("source_id", "")
-        if not source_id:
-            last_error = "no source_id in add response"
-            print(f"  {last_error}")
-            continue
-
-        wait_ok, status = wait_for_source_with_status(source_id)
-        if not wait_ok:
-            last_error = f"processing failed: {status}"
-            print(f"  {last_error}")
-            cleanup_error_sources(silent=True)
-            continue
-
-        # Capture NotebookLM's auto-fetched title for a better [NNN] rename
-        sl_ok, sl_out = run_command(
-            ["notebooklm", "source", "list", "--json"], capture_json=True)
-        if sl_ok and isinstance(sl_out, dict):
-            for s in sl_out.get("sources", []):
-                if s.get("id") == source_id:
-                    ft = s.get("title", "")
-                    if ft:
-                        title = convert_to_traditional(ft)
-                    break
-
-        indexed = format_title_with_index(new_idx, title)
-        rename_ok = rename_source(source_id, indexed)
-        if not rename_ok:
-            print(f"  ⚠ rename_source failed for {source_id} — title will be "
-                  f"reconciled on next --reindex", file=sys.stderr)
-        elapsed = int(time.time() - t0)
-        # Atomicity: append to index.list FIRST, then record tracking.
-        # If the index.list append fails → bail out before writing the tracking
-        # file (user can retry cleanly). If index.list succeeds but tracking
-        # write fails later → --reindex / sync_tracking_from_notebook will
-        # self-heal the tracking line from the index.list row.
-        try:
-            with open(index_file, 'a', encoding='utf-8') as f:
-                f.write(format_index_entry_line(
-                    new_idx, video_url, title, source=source_marker, date="",
-                ))
-        except Exception as e:
-            print(f"  ERROR: failed to append to {index_file}: {e}", file=sys.stderr)
-            return False
-        print(f"  Appended to {index_file} with source={source_marker!r}")
-        record_success_url(new_idx, video_url, elapsed, ok_file)
-        print(f"  SUCCESS [YouTube]: {indexed} ({elapsed}s)")
-        native_success = True
-        break
-
-    if not native_success:
-        if not use_whisper:
-            print(f"  All retries exhausted; whisper disabled. Failed.")
-            return False
-        print(f"  All retries exhausted. Trying whisper fallback...")
-        ok_w, result = do_whisper_transcription(
-            video_url, title, transcripts_dir,
-            colab_url=colab_url,
-            sshfs_config=sshfs_config,
-            ssh_config=ssh_config,
-            local_fallback=local_fallback,
-            colab_timeout=colab_timeout,
-        )
-        if not ok_w:
-            print(f"  Whisper failed: {result}")
-            return False
-        indexed = format_title_with_index(new_idx, title)
-        add_ok, text_source_id = add_text_source(result, indexed)
-        if not add_ok:
-            print(f"  Failed to add text source: {text_source_id}")
-            return False
-        elapsed = int(time.time() - t0)
-        # Atomicity: append to index.list FIRST, then record tracking.
-        # Same rationale as native path above — if the append fails we bail
-        # before writing the tracking file; if tracking fails later, reindex
-        # rediscovers the row from index.list.
-        try:
-            with open(index_file, 'a', encoding='utf-8') as f:
-                f.write(format_index_entry_line(
-                    new_idx, video_url, title, source=source_marker, date="",
-                ))
-        except Exception as e:
-            print(f"  ERROR: failed to append to {index_file}: {e}", file=sys.stderr)
-            return False
-        print(f"  Appended to {index_file} with source={source_marker!r}")
-        record_video2txt_url(new_idx, video_url, elapsed, video2txt_file)
-        print(f"  SUCCESS [Whisper]: {indexed} ({elapsed}s)")
-
-    return True
 
 
 def sync_tracking_from_notebook(playlist_url: str, index_file: Path,
@@ -3534,7 +3648,8 @@ Examples:
              "currently-bound notebook and append to index.list with source='extra'. "
              "Accepts an optional folder path as positional arg (order-agnostic, comma-tolerant); "
              "default is cwd. Runs the same upload pipeline as -r (native YouTube → whisper "
-             "fallback chain). Skips silently if the URL is already tracked."
+             "fallback chain). Skips (with a message) if the URL is already tracked; "
+             "compares canonical forms so youtu.be / watch?v= / shorts variants all match."
     )
     parser.add_argument(
         "--text-back-to-video-effort",

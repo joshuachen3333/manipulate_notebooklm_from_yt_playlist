@@ -384,3 +384,64 @@ All three rows now have their `sort_date` column starting at the exact same term
 - Consider: URL normalization (youtu.be vs youtube.com/watch?v=), `Strategy -1` naming, help-text "skips silently" claim, local `import math` placement
 
 Parallel-agent dispatch again proved fast and conflict-free despite all three editing the same file — Edit's file-modified guard caught the one near-collision and the agent re-read + re-applied cleanly.
+
+## 10. [2026-04-18] Third parallel-agent sweep + polish: TSV defense, concurrent lock, URL canonicalization, polish
+
+Final pass on the owls council findings from #8. Three parallel agents plus a quick inline polish wrap-up.
+
+Prompts:
+- "keep going"
+- "ok, go ahead"
+
+### 10a. TSV injection defense (blocker #3)
+Added `_sanitize_tsv_field(s)` — strips `\t` → space, drops `\n` and `\r`. Applied inside `format_index_entry_line` to `title` and `source` before quoting/padding. `url` and `date` unaffected. Verified: round-trip of `'tab\there\nnewline\rcarriage'` emits a clean single-row TSV with no column corruption.
+
+### 10b. Concurrent `--add-video` lock (blocker #5)
+Added `_exclusive_file_lock(lock_path)` at module scope — `fcntl.flock(LOCK_EX)` context manager (blocking acquire, auto-release on exit/exception). Wrapped the entire critical section of `add_single_video()` — from the max_idx_f scan through tracking-file writes — with the lock on `add_source_working.lock`. Coexists correctly with the existing `claim_index`/`release_index` per-video locks used by the multi-session resume path.
+
+Tradeoff: lock is held across whisper fallback (potentially minutes for long videos on CPU whisper). Accepted the pessimistic-but-bulletproof variant per spec; could be tightened later if contention becomes an issue.
+
+### 10c. URL canonicalization (consider item)
+New `normalize_youtube_url(url)` helper (lines 107-160) uses `urllib.parse.urlparse`/`parse_qs` to canonicalize any recognized YouTube URL variant to `https://www.youtube.com/watch?v=<ID>`:
+- `www.youtube.com/watch?v=X` + `list=…&index=…` tail → stripped to bare `watch?v=X`
+- `youtube.com`, `m.youtube.com`, `youtu.be/X`, `/shorts/X` — all canonicalized
+- Schemeless URLs handled (prepends `https://` before parsing)
+- Non-YouTube input returned unchanged (never raises)
+
+Wired into two dedup sites:
+- `_match_sources_by_title` Strategy `"native-url"` — builds `{normalize(u): original_u}` map, normalizes each `source.url` for comparison, returns original index.list URL on match
+- `add_single_video` duplicate check — pre-canonicalizes the `ok_urls ∪ v2t_urls ∪ existing_urls` set and checks `normalize(video_url)` membership; prints canonical form in the skip message when the user-given form differed
+
+### 10d. Inline polish (4 items)
+Did these myself after agents returned, since they're each one-liners:
+- `import math` hoisted from `add_single_video` function-body to module top (next to `import unicodedata`)
+- `Strategy -1` comments at two sites → `Strategy "native-url"` (descriptive, no magic number)
+- Help text for `--add-video`: "Skips silently" → "Skips (with a message)" + adds note about canonical-form matching
+- Clean-up the deferred URL-normalization wiring in `add_single_video` (agent 3 intentionally left this off-limits to avoid colliding with agent 2's lock wrap)
+
+### 10e. Owls tally — final
+
+| Item | State |
+|------|-------|
+| Blocker #1 data loss in reindex | ✓ |
+| Blocker #2 needless rewrites | ✓ |
+| Blocker #3 TSV injection | ✓ |
+| Blocker #4 non-atomic add-video | ✓ |
+| Blocker #5 concurrent lock | ✓ |
+| Blocker #6 duplicate URL overwrite | ✓ |
+| Blocker #7 index collision (disputed) | — skipped |
+| Should-fix aggressive `strip('"')` | ✓ |
+| Should-fix parser duplication | ✓ |
+| Should-fix rename_source silent failure | ✓ |
+| Consider CJK visual-width padding | ✓ |
+| Consider URL normalization | ✓ |
+| Consider Strategy naming | ✓ |
+| Consider help-text mismatch | ✓ |
+| Consider import math placement | ✓ |
+
+14 of 15 items addressed across 3 parallel-agent dispatches (9 agents total across entries #8, #9, #10) plus one inline polish pass. The single skipped item was explicitly disputed in the owls review and I agreed with Codex against Gemini on that one.
+
+### 10f. Lessons
+- Parallel agents work well on the same file as long as each is scoped to a distinct function.
+- Deferring one small step (URL normalization in add_single_video) to an inline pass after parallel agents was the right call to avoid lock-wrap collision.
+- Owls review + parallel-agent followup is a powerful two-skill combo — owls surfaces issues Claude-alone misses, parallel agents tackle them concurrently. Worth reaching for on any non-trivial commit.

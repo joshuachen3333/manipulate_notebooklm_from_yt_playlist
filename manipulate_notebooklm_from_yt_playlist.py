@@ -27,6 +27,7 @@ import time
 import argparse
 import shutil
 import os
+import unicodedata
 from urllib.parse import urlparse, parse_qs
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -471,7 +472,14 @@ def parse_index_entry_line(line: str) -> dict | None:
     except ValueError:
         return None
     url = parts[1].strip()
-    title = parts[2].rstrip().strip('"') if len(parts) >= 3 else ""
+    if len(parts) >= 3:
+        raw_title_field = parts[2].rstrip()
+        if len(raw_title_field) >= 2 and raw_title_field.startswith('"') and raw_title_field.endswith('"'):
+            title = raw_title_field[1:-1]
+        else:
+            title = raw_title_field
+    else:
+        title = ""
     source = ""
     date = ""
     if len(parts) == 4:
@@ -494,6 +502,22 @@ def parse_index_entry_line(line: str) -> dict | None:
     }
 
 
+def _visual_width(s: str) -> int:
+    """Monospace-terminal column width of s. East-Asian Wide / Full-width
+    characters count as 2; everything else counts as 1. Ambiguous-width ('A')
+    is treated as 1 to match typical non-CJK locale terminals."""
+    return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in s)
+
+
+def _pad_to_visual_width(s: str, width: int) -> str:
+    """Left-align s, right-pad with spaces so visual width reaches `width`.
+    If s is already >= width, return unchanged."""
+    current = _visual_width(s)
+    if current >= width:
+        return s
+    return s + ' ' * (width - current)
+
+
 def format_index_entry_line(idx: int | float, url: str, title: str,
                              source: str = "", date: str = "") -> str:
     """Format one index.list data row using the current schema.
@@ -505,8 +529,8 @@ def format_index_entry_line(idx: int | float, url: str, title: str,
     title_field = f'"{title}"'
     if not source and not date:
         return f'{idx}\t{url}\t{title_field}\n'
-    padded_title = f'{title_field:<{INDEX_TITLE_WIDTH}}'
-    padded_source = f'{source:<{INDEX_SOURCE_WIDTH}}'
+    padded_title = _pad_to_visual_width(title_field, INDEX_TITLE_WIDTH)
+    padded_source = _pad_to_visual_width(source, INDEX_SOURCE_WIDTH)
     return f'{idx}\t{url}\t{padded_title}\t{padded_source}\t{date}\n'
 
 
@@ -2362,7 +2386,10 @@ def add_single_video(
                     break
 
         indexed = format_title_with_index(new_idx, title)
-        rename_source(source_id, indexed)  # tolerate rename failure; source is in
+        rename_ok = rename_source(source_id, indexed)
+        if not rename_ok:
+            print(f"  ⚠ rename_source failed for {source_id} — title will be "
+                  f"reconciled on next --reindex", file=sys.stderr)
         elapsed = int(time.time() - t0)
         # Atomicity: append to index.list FIRST, then record tracking.
         # If the index.list append fails → bail out before writing the tracking

@@ -342,3 +342,45 @@ This session was a fair test of whether the two new skills pull their weight:
 - **owls-council** surfaced bugs I hadn't seen (even after writing the code myself) — genuinely useful.
 - **dispatching-parallel-agents** turned a 4-bug queue into 3 concurrent edits with zero conflicts — noticeably faster than sequential.
 Both skills stay in the rotation.
+
+## 9. [2026-04-18] Second parallel-agent sweep: quote preservation, rename warnings, CJK-aware padding
+
+Continued from #8 — tackled the should-fix + top consider items the owls flagged.
+
+Prompts:
+- "let's move on the issues"
+- "yes,"
+
+Three parallel general-purpose agents, each scoped to one independent change:
+
+### 9a. Quote preservation in `parse_index_entry_line`
+Old: `parts[2].rstrip().strip('"')` removed ALL leading/trailing quotes (greedy). Broke titles like `"The "ONE CANDLE" Scalping"` (a real YouTube title pattern).
+
+New: strip exactly ONE wrapping pair only if both ends are `"`. Inner quotes are preserved verbatim.
+
+Verified: `"a"b"` now parses to `a"b` (not `a`). Round-trip through write + parse is lossless.
+
+### 9b. Surfaced `rename_source` failures in `add_single_video`
+Old: `rename_source(source_id, indexed)` result ignored — silent failure leaves the notebook showing an auto-fetched title instead of `[NNN] xxx`, user only notices it in the NotebookLM UI.
+
+New: captured return value; on failure emits `⚠ rename_source failed for {id} — title will be reconciled on next --reindex` to stderr. Doesn't abort (source is in, reindex fixes it). Audit confirmed no other silent-bool returns in `add_single_video`.
+
+### 9c. CJK-aware visual-width padding
+Old: `f'{title_field:<{INDEX_TITLE_WIDTH}}'` counts Python characters, not display columns. CJK chars take 2 columns but counted as 1, so the `sort_date` column failed to align when CJK-heavy titles mixed with ASCII.
+
+New: two module-level helpers `_visual_width(s)` and `_pad_to_visual_width(s, width)` using `unicodedata.east_asian_width()` to count `W` / `F` chars as 2 columns. `format_index_entry_line` now uses `_pad_to_visual_width`. Added `import unicodedata` at module top.
+
+Verified:
+- `'hello world'` (11 cols) + padding to 100 → 89 trailing spaces, total 100 cols.
+- `'你好世界'` (8 cols) + padding to 100 → 92 trailing spaces, total 100 cols.
+- `'hello 世界'` (10 cols) + padding to 100 → 90 trailing spaces, total 100 cols.
+
+All three rows now have their `sort_date` column starting at the exact same terminal column regardless of CJK content.
+
+### 9d. Still open (deferred)
+- Blocker #3 (TSV injection from tabs/newlines in titles) — low probability
+- Blocker #5 (concurrent `--add-video` race) — would need `add_source_working.lock` plumbing
+- Blocker #7 (disputed index-collision) — low reality
+- Consider: URL normalization (youtu.be vs youtube.com/watch?v=), `Strategy -1` naming, help-text "skips silently" claim, local `import math` placement
+
+Parallel-agent dispatch again proved fast and conflict-free despite all three editing the same file — Edit's file-modified guard caught the one near-collision and the agent re-read + re-applied cleanly.

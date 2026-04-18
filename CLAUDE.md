@@ -97,6 +97,11 @@ python3 manipulate_notebooklm_from_yt_playlist.py --update --debug      # debug 
 python3 manipulate_notebooklm_from_yt_playlist.py --cleanup             # current dir
 python3 manipulate_notebooklm_from_yt_playlist.py --cleanup /path/to/dir
 
+# Add a single extra video (not from the source playlist) to a notebook folder
+python3 manipulate_notebooklm_from_yt_playlist.py --add-video "https://youtu.be/XYZ"             # cwd
+python3 manipulate_notebooklm_from_yt_playlist.py --add-video "https://youtu.be/XYZ" /path/folder # explicit folder
+python3 manipulate_notebooklm_from_yt_playlist.py /path/folder --add-video "https://youtu.be/XYZ" # same (order-agnostic)
+
 # Try to replace whisper text sources with native YouTube sources
 python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort          # all text sources
 python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort "https://..." # specific URL

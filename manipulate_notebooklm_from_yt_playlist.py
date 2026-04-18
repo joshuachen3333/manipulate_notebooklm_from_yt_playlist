@@ -37,6 +37,14 @@ import opencc
 DEFAULT_DELAY_SECONDS = 1
 DEBUG = False  # Set via --debug flag
 AUTO_YES = False  # Set via -y flag
+# Fixed visual width (chars) for the title field (including surrounding quotes)
+# in index.list rows that have a sort_date column — so the date column aligns.
+INDEX_TITLE_WIDTH = 100
+# Fixed visual width for the source-marker column (col 4) — "extra" = 5 chars,
+# padded to 7 for visual breathing room; keeps the sort_date column aligned.
+INDEX_SOURCE_WIDTH = 7
+# Source-marker value for rows added via --add-video (i.e. not from the source playlist).
+SOURCE_MARKER_EXTRA = "extra"
 
 # Auth failure patterns (case-insensitive match against stderr/stdout)
 AUTH_FAIL_PATTERNS = [
@@ -441,6 +449,67 @@ def read_index_metadata(index_file: Path) -> dict:
     return meta
 
 
+def parse_index_entry_line(line: str) -> dict | None:
+    """Parse a single non-header line of index.list into a dict, or None if malformed.
+
+    Handles both the legacy 4-column format (idx\\turl\\ttitle\\tdate) and the new
+    5-column format (idx\\turl\\ttitle\\tsource\\tdate). Field 1 (idx) is parsed as
+    float to support fractional reordering (`0.5`, `0.51`, etc.).
+
+    Returns {'idx': float, 'idx_raw': str, 'url': str, 'title': str,
+             'source': str, 'date': str} or None.
+    """
+    s = line.rstrip('\n').rstrip('\r')
+    if not s.strip() or s.startswith('#'):
+        return None
+    parts = s.split('\t')
+    if len(parts) < 2:
+        return None
+    idx_raw = parts[0].strip()
+    try:
+        idx_f = float(idx_raw)
+    except ValueError:
+        return None
+    url = parts[1].strip()
+    title = parts[2].rstrip().strip('"') if len(parts) >= 3 else ""
+    source = ""
+    date = ""
+    if len(parts) == 4:
+        # 4-column: might be legacy (col4=date) or new-short (col4=source, no date).
+        tok = parts[3].strip()
+        if tok.startswith('t:') or (len(tok) == 8 and tok.isdigit()):
+            date = tok
+        else:
+            source = tok
+    elif len(parts) >= 5:
+        source = parts[3].strip()
+        date = parts[4].strip()
+    return {
+        'idx': idx_f,
+        'idx_raw': idx_raw,
+        'url': url,
+        'title': title,
+        'source': source,
+        'date': date,
+    }
+
+
+def format_index_entry_line(idx: int | float, url: str, title: str,
+                             source: str = "", date: str = "") -> str:
+    """Format one index.list data row using the current schema.
+
+    Emits a short 3-column row when both source and date are empty; otherwise
+    emits the full 5-column padded form so downstream columns line up.
+    Trailing newline is included.
+    """
+    title_field = f'"{title}"'
+    if not source and not date:
+        return f'{idx}\t{url}\t{title_field}\n'
+    padded_title = f'{title_field:<{INDEX_TITLE_WIDTH}}'
+    padded_source = f'{source:<{INDEX_SOURCE_WIDTH}}'
+    return f'{idx}\t{url}\t{padded_title}\t{padded_source}\t{date}\n'
+
+
 def write_index_list(video_entries: list, playlist_url: str, index_file: Path,
                      notebook_url: str | None = None,
                      notebook_title: str | None = None):
@@ -461,11 +530,13 @@ def write_index_list(video_entries: list, playlist_url: str, index_file: Path,
             f.write(f"# notebook title:\t{nb_title}\n")
         for i, entry in enumerate(video_entries, 1):
             url, title = entry[0], entry[1]
+            # Tuple layout tolerated:
+            #   (url, title)
+            #   (url, title, date)
+            #   (url, title, date, source)
             date = entry[2] if len(entry) >= 3 and entry[2] else ""
-            if date:
-                f.write(f'{i}\t{url}\t"{title}"\t{date}\n')
-            else:
-                f.write(f'{i}\t{url}\t"{title}"\n')
+            source = entry[3] if len(entry) >= 4 and entry[3] else ""
+            f.write(format_index_entry_line(i, url, title, source=source, date=date))
 
 
 def update_index_metadata(index_file: Path, *,
@@ -2069,12 +2140,30 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dic
     for title, url in title_to_url.items():
         traditional_to_url[convert_to_traditional(title)] = url
 
+    # Strategy -1: URL equality on the source's native `url` field.
+    # Native YouTube sources (added via `notebooklm source add <url>`) carry the
+    # URL in the source record; if it matches any index.list row's URL, that's a
+    # definitive match regardless of whether the row came from the source
+    # playlist or was added via `--add-video`. This is what lets reindex
+    # correctly reorder manually-added ("extra") entries.
+    url_from_source_url: dict[str, str] = {}  # source_id -> url
+    for s in sources:
+        source_id = s.get("id")
+        source_url = (s.get("url") or "").strip()
+        if source_url and source_url in new_map:
+            url_from_source_url[source_id] = source_url
+    if url_from_source_url:
+        print(f"Native-URL matches: {len(url_from_source_url)}")
+
     # Strategy 0: Match text sources by #URL in fulltext (most reliable for whisper uploads)
     url_from_fulltext = {}  # source_id -> url
     text_source_count = 0
     for s in sources:
         source_id = s.get("id")
         source_type = s.get("type", "")
+        # Skip if already matched by the URL field
+        if source_id in url_from_source_url:
+            continue
         # Text sources (whisper uploads) may have #URL as first line
         if source_type == "text":
             text_source_count += 1
@@ -2098,8 +2187,9 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dic
         source_id = s.get("id")
         source_title = s.get("title", "")
 
-        # Strategy 0: #URL fulltext match (highest priority)
-        url = url_from_fulltext.get(source_id)
+        # Strategy -1: URL-field equality on native YouTube sources (most direct).
+        # Strategy 0: #URL fulltext match (highest priority for whisper text sources).
+        url = url_from_source_url.get(source_id) or url_from_fulltext.get(source_id)
 
         if not url:
             # Strip [NNN] prefix if present
@@ -2154,6 +2244,165 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str, new_map: dic
     return rename_plan, unmapped
 
 
+def add_single_video(
+    video_url: str,
+    index_file: Path,
+    ok_file: Path,
+    video2txt_file: Path,
+    transcripts_dir: Path,
+    max_retries: int = 2,
+    use_whisper: bool = True,
+    colab_url: str | None = None,
+    sshfs_config=None,
+    ssh_config=None,
+    local_fallback: bool = True,
+    colab_timeout: int = 0,
+    source_marker: str = SOURCE_MARKER_EXTRA,
+) -> bool:
+    """Add a single YouTube video to the current folder's bound notebook.
+
+    Flow:
+      1. Validate folder (index.list present) and notebook selection.
+      2. Skip if URL already tracked in ok_file / video2txt_file / index.list.
+      3. Compute next sequential integer index (append at end of file order).
+      4. Try native `notebooklm source add <url>` with up to max_retries.
+      5. On failure, whisper fallback chain (Colab → SSHFS → SSH → local).
+      6. Record in tracking file and append one row to index.list with
+         source=source_marker (default "extra").
+
+    Returns True on success (including silent-skip for already-tracked URLs).
+    """
+    import math
+
+    if not index_file.exists():
+        print(f"Error: {index_file} not found in {Path.cwd()} — not a managed notebook folder.",
+              file=sys.stderr)
+        return False
+
+    is_selected, notebook_id, notebook_title = check_notebook_selected()
+    if not is_selected:
+        print("Error: No notebook selected in this folder.", file=sys.stderr)
+        print("Run 'notebooklm use <notebook_id>' or re-bind with --notebook-url first.",
+              file=sys.stderr)
+        return False
+    print(f"Notebook: {notebook_title} ({notebook_id[:8]}...)")
+
+    # Duplicate detection across all tracking sources
+    ok_urls = load_ok_urls(ok_file)
+    v2t_urls = load_video2txt_urls(video2txt_file)
+    existing_urls: set[str] = set()
+    max_idx_f = 0.0
+    with open(index_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            entry = parse_index_entry_line(line)
+            if entry:
+                existing_urls.add(entry['url'])
+                if entry['idx'] > max_idx_f:
+                    max_idx_f = entry['idx']
+
+    if video_url in ok_urls or video_url in v2t_urls or video_url in existing_urls:
+        print(f"Already tracked / present: {video_url}")
+        print(f"Skipping (no re-add). Remove the line from index.list + tracking "
+              f"files manually if you really want a fresh upload.")
+        return True
+
+    new_idx = math.floor(max_idx_f) + 1
+
+    # Fetch title upfront (used for whisper filenames + fallback display title)
+    print(f"Fetching video title...")
+    raw_title = get_video_title(video_url)
+    title = convert_to_traditional(raw_title)
+    print(f"  Title: {title}")
+
+    print(f"\nAdding #{new_idx}: {video_url}")
+    cleanup_error_sources(silent=True)
+    t0 = time.time()
+
+    native_success = False
+    last_error = ""
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            print(f"  RETRY {attempt}/{max_retries}...")
+            time.sleep(2)
+
+        success, output = run_command(
+            ["notebooklm", "source", "add", "--json", video_url],
+            capture_json=True,
+        )
+        if not success or (isinstance(output, dict) and output.get("error")):
+            last_error = (output.get("message", str(output))
+                          if isinstance(output, dict) else str(output))
+            print(f"  Add failed: {last_error[:200]}")
+            cleanup_error_sources(silent=True)
+            continue
+
+        source = output.get("source", {}) if isinstance(output, dict) else {}
+        source_id = source.get("id", "") or output.get("source_id", "")
+        if not source_id:
+            last_error = "no source_id in add response"
+            print(f"  {last_error}")
+            continue
+
+        wait_ok, status = wait_for_source_with_status(source_id)
+        if not wait_ok:
+            last_error = f"processing failed: {status}"
+            print(f"  {last_error}")
+            cleanup_error_sources(silent=True)
+            continue
+
+        # Capture NotebookLM's auto-fetched title for a better [NNN] rename
+        sl_ok, sl_out = run_command(
+            ["notebooklm", "source", "list", "--json"], capture_json=True)
+        if sl_ok and isinstance(sl_out, dict):
+            for s in sl_out.get("sources", []):
+                if s.get("id") == source_id:
+                    ft = s.get("title", "")
+                    if ft:
+                        title = convert_to_traditional(ft)
+                    break
+
+        indexed = format_title_with_index(new_idx, title)
+        rename_source(source_id, indexed)  # tolerate rename failure; source is in
+        elapsed = int(time.time() - t0)
+        record_success_url(new_idx, video_url, elapsed, ok_file)
+        print(f"  SUCCESS [YouTube]: {indexed} ({elapsed}s)")
+        native_success = True
+        break
+
+    if not native_success:
+        if not use_whisper:
+            print(f"  All retries exhausted; whisper disabled. Failed.")
+            return False
+        print(f"  All retries exhausted. Trying whisper fallback...")
+        ok_w, result = do_whisper_transcription(
+            video_url, title, transcripts_dir,
+            colab_url=colab_url,
+            sshfs_config=sshfs_config,
+            ssh_config=ssh_config,
+            local_fallback=local_fallback,
+            colab_timeout=colab_timeout,
+        )
+        if not ok_w:
+            print(f"  Whisper failed: {result}")
+            return False
+        indexed = format_title_with_index(new_idx, title)
+        add_ok, text_source_id = add_text_source(result, indexed)
+        if not add_ok:
+            print(f"  Failed to add text source: {text_source_id}")
+            return False
+        elapsed = int(time.time() - t0)
+        record_video2txt_url(new_idx, video_url, elapsed, video2txt_file)
+        print(f"  SUCCESS [Whisper]: {indexed} ({elapsed}s)")
+
+    # Append to index.list with the source marker. No sort_date (user said keep it simple).
+    with open(index_file, 'a', encoding='utf-8') as f:
+        f.write(format_index_entry_line(
+            new_idx, video_url, title, source=source_marker, date="",
+        ))
+    print(f"  Appended to {index_file} with source={source_marker!r}")
+    return True
+
+
 def sync_tracking_from_notebook(playlist_url: str, index_file: Path,
                                 ok_file: Path, video2txt_file: Path,
                                 cleanup_errors: bool = True) -> tuple[int, int, int]:
@@ -2182,7 +2431,8 @@ def sync_tracking_from_notebook(playlist_url: str, index_file: Path,
                 if len(parts) >= 2:
                     new_idx = int(parts[0])
                     url = parts[1]
-                    title = parts[2].strip('"') if len(parts) >= 3 else ""
+                    # .rstrip() first to handle fixed-width padding, then strip('"').
+                    title = parts[2].rstrip().strip('"') if len(parts) >= 3 else ""
                     new_map[url] = (new_idx, title)
 
     success, output = run_command(
@@ -2228,22 +2478,59 @@ def reindex_sources(playlist_url: str,
         sys.exit(1)
     print(f"Notebook: {notebook_title} ({notebook_id})")
 
-    # 1. Read new index.list → URL → (new_index, new_title)
+    # 1. Read index.list → parse as float indices, sort, renumber to clean
+    #    sequential ints, then rewrite the file preserving headers and extra
+    #    columns (source marker, sort_date). This is how fractional reordering
+    #    (e.g. the user edits index `5` to `0.5` to move it to the top) is
+    #    applied — see INDEX_LIST_SPEC.md §"Manual reordering".
     if not index_file.exists():
         print(f"Error: Current index.list not found: {index_file}", file=sys.stderr)
         print("Run --list-only first to create a sorted index.list.", file=sys.stderr)
         sys.exit(1)
-    new_map = {}  # url -> (new_index, new_title)
+
+    header_lines: list[str] = []
+    parsed_entries: list[dict] = []  # each: {idx, url, title, source, date}
     with open(index_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                parts = line.split('\t')
-                if len(parts) >= 2:
-                    new_idx = int(parts[0])
-                    url = parts[1]
-                    title = parts[2].strip('"') if len(parts) >= 3 else ""
-                    new_map[url] = (new_idx, title)
+        for raw_line in f:
+            if raw_line.startswith('#'):
+                header_lines.append(raw_line.rstrip('\n'))
+                continue
+            entry = parse_index_entry_line(raw_line)
+            if entry is not None:
+                parsed_entries.append(entry)
+
+    # Sort by float index (stable on ties preserves file order).
+    parsed_entries.sort(key=lambda e: e['idx'])
+
+    # Renumber: assign clean sequential integers (1..N).
+    renumbered_for_write: list[dict] = []
+    new_map: dict[str, tuple[int, str]] = {}
+    source_marker_by_url: dict[str, str] = {}
+    for new_idx, entry in enumerate(parsed_entries, 1):
+        new_entry = {**entry, 'idx': new_idx}
+        renumbered_for_write.append(new_entry)
+        new_map[entry['url']] = (new_idx, entry['title'])
+        source_marker_by_url[entry['url']] = entry['source']
+
+    # Detect whether any fractional / non-sequential indices existed, so we
+    # only rewrite when the file actually changes.
+    needs_rewrite = any(
+        str(e['idx']) != e['idx_raw'] for e in parsed_entries
+    ) or any(
+        i + 1 != e['idx'] for i, e in enumerate(parsed_entries)
+    )
+    if needs_rewrite:
+        with open(index_file, 'w', encoding='utf-8') as f:
+            for h in header_lines:
+                f.write(h + '\n')
+            for e in renumbered_for_write:
+                f.write(format_index_entry_line(
+                    e['idx'], e['url'], e['title'],
+                    source=e['source'], date=e['date'],
+                ))
+        print(f"index.list rewritten with clean sequential indices "
+              f"({len(renumbered_for_write)} rows)")
+
     print(f"New index.list: {len(new_map)} entries")
 
     # 2. Get notebook sources
@@ -3143,6 +3430,17 @@ Examples:
              "With --setup/--auto: skip find/create and bind to this notebook."
     )
     parser.add_argument(
+        "--add-video",
+        type=str,
+        metavar="VIDEO_URL",
+        dest="add_video",
+        help="Add a single YouTube video (not from the folder's source playlist) to the "
+             "currently-bound notebook and append to index.list with source='extra'. "
+             "Accepts an optional folder path as positional arg (order-agnostic, comma-tolerant); "
+             "default is cwd. Runs the same upload pipeline as -r (native YouTube → whisper "
+             "fallback chain). Skips silently if the URL is already tracked."
+    )
+    parser.add_argument(
         "--text-back-to-video-effort",
         type=str,
         nargs='?',
@@ -3198,6 +3496,10 @@ Examples:
 
 
 def main():
+    # Declare upfront so every branch of main() can assign these without
+    # running into Python's "assigned before global declaration" SyntaxError.
+    global DEBUG, AUTO_YES
+
     print()  # Empty line prefix for readability
 
     # Register exit timestamp (prints on any exit including Ctrl+C and errors)
@@ -3244,6 +3546,67 @@ def main():
         print(f"Cleaning up audio files under {start_path}/\n")
         cleanup_mp3_files(start_path)
         sys.exit(0)
+
+    # --add-video: add one YouTube video to the current folder's notebook,
+    # append to index.list with source='extra'. Optional 2nd positional arg =
+    # folder path (order-agnostic, comma-tolerant); default = cwd.
+    if args.add_video:
+        # Find optional folder path in positional args (split on commas per the
+        # same rule used elsewhere; any existing directory token wins).
+        target_path = None
+        for raw in args.positional_args:
+            for piece in raw.split(','):
+                piece = piece.strip()
+                if piece and Path(piece).is_dir():
+                    target_path = str(Path(piece).resolve())
+                    break
+            if target_path:
+                break
+        if target_path:
+            os.chdir(target_path)
+            print(f"Target folder: {target_path}")
+
+        local_notebooklm = Path(".notebooklm")
+        if local_notebooklm.is_dir():
+            os.environ["NOTEBOOKLM_HOME"] = str(local_notebooklm.absolute())
+
+        DEBUG = args.debug
+        AUTO_YES = args.yes
+
+        index_file = Path("index.list")
+        ok_file = Path("add_source_ok.txt")
+        video2txt_file = Path("add_source_video2txt.txt")
+        transcripts_dir = Path("transcripts")
+
+        # Whisper fallback configuration (mirror the main-pipeline setup)
+        colab_url = args.colab_url
+        colab_timeout = args.colab_timeout
+        local_fallback = not args.no_local_fallback
+        remote_sshfs = None if args.no_remote_sshfs else parse_remote_sshfs(args.remote_sshfs)
+        sshfs_mount_point = transcripts_dir / "remote_sshfs"
+        sshfs_config = None
+        ssh_config = None
+        if remote_sshfs:
+            ssh_user, ssh_host, remote_path = remote_sshfs
+            print(f"Mounting SSHFS...")
+            if mount_sshfs(ssh_user, ssh_host, remote_path, sshfs_mount_point):
+                sshfs_config = (sshfs_mount_point, ssh_user, ssh_host, remote_path)
+                atexit.register(unmount_sshfs, sshfs_mount_point)
+            else:
+                print(f"  SSHFS mount failed, will use direct SSH method instead")
+                ssh_config = (ssh_user, ssh_host, remote_path)
+
+        ok = add_single_video(
+            args.add_video, index_file, ok_file, video2txt_file, transcripts_dir,
+            max_retries=args.retry,
+            use_whisper=not args.without_whisper,
+            colab_url=colab_url,
+            sshfs_config=sshfs_config,
+            ssh_config=ssh_config,
+            local_fallback=local_fallback,
+            colab_timeout=colab_timeout,
+        )
+        sys.exit(0 if ok else 1)
 
     # Extract URL from positional args (first positional arg when not --update)
     args.url = args.positional_args[0] if args.positional_args else None
@@ -3388,7 +3751,6 @@ def main():
     colab_url = args.colab_url
     local_fallback = not args.no_local_fallback  # Default: True (fallback enabled)
     colab_timeout = args.colab_timeout
-    global DEBUG, AUTO_YES
     DEBUG = args.debug
     AUTO_YES = args.yes or args.auto
     start_from = args.start_from
@@ -3570,7 +3932,8 @@ def main():
                     if len(parts) >= 2:
                         idx = int(parts[0])
                         video_url = parts[1]
-                        title = parts[2].strip('"') if len(parts) >= 3 else ""
+                        # .rstrip() first to handle fixed-width padding, then strip('"').
+                        title = parts[2].rstrip().strip('"') if len(parts) >= 3 else ""
                         video_entries.append((idx, video_url, title))
                         url_to_index[video_url] = idx
         print(f"Loaded {len(video_entries)} videos from index.list")

@@ -10,18 +10,44 @@ Three header lines (tab-separated after the colon) followed by tab-separated vid
 # playlist:		<playlist_url>
 # notebook url:		<notebook_url>
 # notebook title:	<notebook_title>
-1	<video_url>	"<title>"	<YYYYMMDD>
-2	<video_url>	"<title>"
+1	<video_url>	"<title>"                                                                                           	       	t:1516992468
+2	<video_url>	"<title>"                                                                                           	extra  	
+3	<video_url>	"<title>"
 ...
 ```
 
-Separator between key and value is **two tabs** for lines 1-2, **one tab** for line 3 — this aligns the value columns at tab stop 3 (col 24 with 8-char tabs).
+Separator between header key and value is **two tabs** for lines 1–2, **one tab** for line 3.
 
 - **Line 1** (`# playlist:`) — source YouTube playlist. Used to regenerate entries and to derive folder name on first create.
 - **Line 2** (`# notebook url:`) — full NotebookLM URL (`https://notebooklm.google.com/notebook/<uuid>`). Records the current binding.
 - **Line 3** (`# notebook title:`) — user-editable source of truth for the notebook title. Also determines the folder name.
 
 Parser is whitespace-tolerant: any amount of tabs/spaces around the `:` is fine. Lines after the last `#` header are video entries.
+
+### Data-row schema (line 4 onward) — 5 columns
+
+| # | Column | Width | Meaning |
+|---|--------|-------|---------|
+| 1 | `index` | — | Row number. Parsed as `float` to support **fractional reordering** (`0.5`, `0.51`, `-1` for "definitely first"). `--reindex` sorts by this float and renumbers back to clean sequential integers. |
+| 2 | `url` | — | YouTube video URL. |
+| 3 | `title` | padded to `INDEX_TITLE_WIDTH = 100` chars (incl. quotes) | Traditional-Chinese title. Parser rstrips before stripping quotes — width is purely visual. |
+| 4 | `source` | padded to `INDEX_SOURCE_WIDTH = 7` chars | Empty = from the source playlist. `extra` = manually added via `--add-video`. Future markers may use `extra:<tag>` form. |
+| 5 | `sort_date` | — | `YYYYMMDD` or `t:<unix_epoch_seconds>` or empty. Historical metadata only — not used as sort key by `--reindex`. |
+
+**Short 3-column form** (`idx\turl\t"title"`) is accepted for rows that have neither a source marker nor a sort_date. The writer only emits short rows when columns 4 and 5 are both empty; otherwise the full padded 5-column form is written.
+
+**Legacy 4-column tolerance:** pre-schema-v2 files had `sort_date` in column 4 (no `source` column). The parser detects this (value matches `t:\d+` or exactly 8 digits) and treats it as `sort_date` with empty `source`. The next `--reindex` / `--update` pass rewrites the file in the new 5-column layout.
+
+### Manual reordering via fractional indices
+
+To move a row to a different position, edit its index (column 1) to any float that sorts where you want it, save, and run `--reindex` (or let the next `--update` sweep pick it up). The index column accepts negative numbers (for "always first"), leading zeros (`0000.5` parses as `0.5`), and arbitrary precision (`0.51`, `0.511`, …).
+
+After `--reindex`:
+- Rows are sorted by the float index (stable — file order is the tiebreaker).
+- Each row is renumbered to a clean sequential integer starting at 1.
+- `index.list` is rewritten with the new integers — fractions are consumed.
+- Every notebook source that matches a row (by URL, `#URL` fulltext header, or title) is renamed to `[NNN] <title>` to match the new order.
+- Tracking files (`add_source_ok.txt`, `add_source_video2txt.txt`) are re-synced with the new indices.
 
 ## 2. Priority order for notebook title
 

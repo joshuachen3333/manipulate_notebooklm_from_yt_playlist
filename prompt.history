@@ -180,3 +180,123 @@ Fix:
 | `sync_tracking_from_notebook(...)` | Record already-imported sources into tracking files |
 
 Spec also written to `INDEX_LIST_SPEC.md` (10 sections, on-disk reference).
+
+## 5. [2026-04-17] Global rename: bookmarklm → notebooklm (historical typo fix)
+
+User flagged that the project name had been `bookmarklm` throughout the codebase — a typo-mashup of "bookmark" + "NotebookLM". The project manipulates NotebookLM, not bookmarks.
+
+Prompt:
+- "a critical error on naming, the folder, the main script and alias (either ~/.zshrc or ~/.local/bin/* that our main project/script name should be notebooklm not bookmarklm, did you see that?"
+
+Two-phase rename (phase B run outside the session by the user since cwd needed to move):
+
+### Phase A — in-session (commit `a4390b7`)
+- `sed` replace 59 occurrences of `bookmarklm` → `notebooklm` across 5 files (`manipulate_bookmarklm_from_yt_playlist.py`, `CLAUDE.md`, `USING_COLAB_4WHISPER.md`, `command.md`, `command_last_working_ok`)
+- `git mv` the main script: `manipulate_bookmarklm_from_yt_playlist.py` → `manipulate_notebooklm_from_yt_playlist.py`
+- Replace `~/.local/bin/manipulate_bookmarklm_from_yt_playlist` symlink with new-name symlink pointing at the renamed script (still-old folder path for the moment)
+
+### Phase B — `/tmp/finish_rename.sh` run outside session
+- `mv` the local folder: `~/work/manipulate_bookmarklm_from_yt_playlist` → `~/work/manipulate_notebooklm_from_yt_playlist`
+- Repoint symlink to the new absolute path
+- Move Claude auto-memory dir (`~/.claude/projects/-Users-joshua-work-manipulate-*-from-yt-playlist`)
+- `gh repo rename manipulate_notebooklm_from_yt_playlist` (updates `origin` URL; GitHub keeps a redirect)
+
+Verification:
+- cwd, symlink, git remote, memory dir all reflect the new name
+- `MEMORY.md` + existing feedback memories survived the move
+
+## 6. [2026-04-17] Two new "3-ai" skills: dogs-debate (adversarial) + owls-council (collaborative review)
+
+User wanted reusable patterns for orchestrating multi-AI conversations via local CLI tools. Two complementary skills created in `~/.claude/skills/`:
+
+### 6a. `3-ai-dogs-debate`
+**Claude drives, Gemini CLI + Codex CLI argue.** For stress-testing falsifiable claims adversarially.
+
+Prompts:
+- "from now on, can you run gemini (cli) and codex (cli) AI tools and interact with those 2 and have a wonderful discussion?"
+- "3, is interesting, and remember to note down everything in the progress for later reference. let's do 20 rounds"
+- "summarize your methodology, how do you arrange this 3 dogs fight on a kickstart topic, how to manage that, and how to form a /skills for further reuse?"
+- "the name should be 3-ai-dogs-debate"
+- "Codex needs --skip-git-repo-check if cwd directory isn't a git repo. modify our skill."
+
+Six-move methodology captured in `SKILL.md`:
+1. Concrete falsifiable seed claim with inlined rules of engagement
+2. Role + constraint priming (one-sentence persona + hard word cap)
+3. Full transcript feed-forward each round (coherence across 20+ rounds)
+4. Driver script, not manual orchestration (`driver_template.py`)
+5. Codex output stripping (critical — extract between first `codex\n` and `tokens used`)
+6. Synthesis pass after N rounds (Gemini, cheap) → agreements / disagreements / strongest args / next experiments
+
+Config knobs: rounds (3–30 guided), `reasoning_effort=medium` (halves Codex latency, no quality loss), word cap (default 250), default log `./3-ai-dogs-debate.md` in cwd, `codex exec --skip-git-repo-check` so non-git cwd works.
+
+Live test on 2026-04-17: ran 20 rounds on "fading PDH/PDL wicks has positive expectancy on intraday ES/NQ tape" — ~11 min wall time, converged with 3 concrete follow-up experiments.
+
+### 6b. `3-ai-owls-council`
+**Claude drafts a proposal; Gemini = Chief Architect, Codex = Senior Implementation Reviewer.** For pre-screening plans/diffs/designs before asking the human for approval. Companion to dogs-debate (dogs fight, owls counsel).
+
+Prompts:
+- "I want another skill, that this time, 3 ai (claude, gemini, codex) no more debate, but they cowork on a vibe coding small medium session."
+- "I'd prefer max of 10 rounds, for the 3 owls"
+
+Flow:
+- Round 1 silent (each owl reviews independently, no cross-exposure)
+- Rounds 2+ rebuttal (each owl sees the other's priors)
+- Fixed output scaffold: `Blockers / Concerns / Nits / Suggestions / Verdict`
+- Convergence check every round (Gemini one-liner "agree on all material blockers? y/n") — 2× `yes` in a row → early stop
+- Hard cap 10, typical 2–3
+- Final synthesis: ranked action list `Must-fix / Should-fix / Consider / Out-of-scope` with `[⚠ disputed]` tags on contested items
+
+Role palette (swap by proposal type): Architect / Security Auditor / Performance Engineer / UX Reviewer / API Designer / Data Modeler / QA Engineer / Test Author / Refactoring Critic / Operational Readiness.
+
+### 6c. Live change detection confirmation
+Via claude-code-guide agent: `~/.claude/skills/` changes take effect in running sessions without restart (per [Claude Code docs — Live change detection](https://code.claude.com/docs/en/skills.md#live-change-detection)). Only caveat: a brand-new top-level skills directory requires a restart, but `~/.claude/skills/` pre-existed so new skills are picked up immediately.
+
+## 7. [2026-04-17] --add-video + fractional reordering + 5-column index.list schema
+
+User wanted to grow a notebook over time with extra YouTube videos that aren't from the source playlist, and to reorder any row freely via manual edit.
+
+Prompts:
+- "I have a major new feature to add --add-video https://single-youtube-video either takes one 2nd argument (a folder path order;comma space separator doesn't matter) or missing 2nd (current cwd) that will add this video to a notebook (folder index.list)"
+- "yes, Does not re-sort by date. Does not touch the playlist URL on line 1, no need for a --re-add flag but I do have one issue here"
+- "it's very likely I keep growing this add-on single video. the first time you append it to the tail is fine. What if later I want to place it at the top. that is not --add-video, but kind of re-sort effort. Do I simply edit the desired order at index.list file? how do I tell you?"
+- "yes, apparently we need both, and especially the regular --update will need this. plus when I move the entry to the top, I will give number like 0000.5 0.51 meaning it is before 0001, is that ok for you?"
+- "能讓第四欄盡量對整齊嗎？ title 取一個稍微大的寬值. 讓第四欄位勁量整齊"
+- "再者, 讓第四欄變成第五欄, 而手動額外新增的 video 需要第四欄 \"extra\" 表示這是非原本 playlist 內的, 是我手動加入甚至排序來的."
+
+### 7a. `--add-video <URL> [<path>]`
+- Takes one YouTube video URL; optional folder path (order-agnostic, comma-tolerant; default = cwd)
+- Requires the target folder to have `index.list` + `.notebooklm/` binding
+- Skip silently if URL already in `add_source_ok.txt` / `add_source_video2txt.txt` / `index.list`
+- Compute next sequential integer (`math.floor(max_existing) + 1`)
+- Upload via existing pipeline (native YouTube → whisper fallback chain honoring `--colab-url`, `--remote-sshfs`, `--no-local-fallback`, etc.)
+- Append one row to `index.list` with `source="extra"` marker, no sort_date
+
+New function `add_single_video()` placed between `_match_sources_by_title` and `sync_tracking_from_notebook` to keep upload primitives co-located. Dispatcher inserted in `main()` before setup_mode, exits 0/1 after completion.
+
+### 7b. Fractional index reordering
+To reorder any row, user edits column 1 to any float (`0.5` for "before 1", `-1` for "always first", `0000.5` zero-padded parses the same as `0.5`), saves, and runs `--reindex` (or lets `--update` sweep pick it up).
+
+`reindex_sources()` now:
+1. Parses column 1 as `float`, not `int` (legacy ints still work)
+2. Sorts entries by the float index (stable on ties, file order tiebreaks)
+3. Renumbers to clean sequential integers 1..N — fractions consumed
+4. Rewrites `index.list` preserving headers 1–3 and per-row `source` + `sort_date` columns
+5. Proceeds with the existing match-and-rename flow on notebook sources
+
+`_match_sources_by_title()` gained **Strategy -1 URL equality**: match notebook source's native `url` field against `index.list` row URLs. This is the most direct match possible and crucially handles `--add-video` entries (whose URLs aren't in the source playlist but still equal the source.url stored by NotebookLM).
+
+### 7c. New 5-column data-row schema with `source` marker
+Columns are now `idx | url | title | source | sort_date`. The `source` column is empty for playlist-native rows and `extra` for `--add-video` rows; reserved `extra:<tag>` namespace for future markers.
+
+Visual alignment constants:
+- `INDEX_TITLE_WIDTH = 100` — title (with quotes) pads to this width so downstream columns align
+- `INDEX_SOURCE_WIDTH = 7` — source marker pads to this width
+
+New helpers `parse_index_entry_line()` + `format_index_entry_line()` — single point of truth for schema. Three legacy parser sites (at the main pipeline resume-load, at reindex input, and at update-list discovery) all now route through `parts[2].rstrip().strip('"')` to tolerate the width padding.
+
+**Backward compatibility:** legacy 4-column files (where column 4 was `sort_date` before the `source` column existed) are parsed correctly — if `parts[3]` matches `t:\d+` or exactly 8 digits, it's treated as `sort_date` with empty `source`. Next `--reindex`/`--update` rewrites into the new 5-column format and the ambiguity is gone.
+
+`INDEX_LIST_SPEC.md` updated with: full data-row schema table, fractional-reordering section, legacy tolerance note. `CLAUDE.md` gained three `--add-video` example invocations.
+
+### 7d. `global DEBUG, AUTO_YES` hoisted to top of `main()`
+Adding the `--add-video` branch earlier in `main()` exposed a `SyntaxError: name 'DEBUG' is assigned to before global declaration` because the previous code's `global DEBUG, AUTO_YES` was buried inside a later branch. Moved the declaration to the top of `main()`; removed the redundant inner declaration.

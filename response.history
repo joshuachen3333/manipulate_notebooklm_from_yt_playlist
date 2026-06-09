@@ -1,0 +1,204 @@
+
+
+
+
+
+##     2026-05-17 06:45 CST
+
+###    User Prompt
+1, 先把 剛剛都寫下來
+2, 然後做 B and C
+
+###    result
+All four tasks done. Here's the summary:
+
+## What landed
+
+**1. `prompt.history` entry #15** — captures the strategy_librarian incident (285 silently contaminated recipes), codex's three-layer fix on Librarian side, this repo's exposure analysis, and the rationale for adopting B+C while deferring A.
+
+**2. Memory** — two new project memory files cross-linking each other:
+- `project_genesis_whisper_hidden_deps.md` — the three off-git Genesis artifacts (cookies file, Node 22 nvm path, yt-dlp 2026.03.17)
+- `project_genesis_whisper_source_quality.md` — schema-valid ≠ source-quality valid; nvidia-smi probe rule
+
+**3. B — Genesis cookies fallback** (4 download sites + 2 new helpers):
+- `get_genesis_cookies_fallback()` — scps `/genesis/tmp/youtube_cookies_codex.txt` to `/tmp/youtube_cookies_genesis_shared.txt` once per process; returns None gracefully if Genesis unreachable
+- `yt_dlp_cookie_args(attempt)` — attempts 1-2 use Chrome live cookies, attempt 3 uses Genesis fallback
+- `max_download_retries` bumped from 2 → 3 in all four whisper paths
+- Smoke-tested live: scp from Genesis worked, attempt-3 returned the cached path
+
+**4. C — Genesis GPU activity probe**:
+- `probe_genesis_gpu_in_background()` — daemon thread, queries `nvidia-smi` 90s after dispatch, prints utilization line; warns on `0% / 0 MiB`
+- Wired into `whisper_via_sshfs` (line 2105) and `whisper_via_ssh` (line 2348, first attempt only)
+
+**5. CLAUDE.md** — updated Whisper Steps + added a Genesis GPU probe section.
+
+Files touched: `CLAUDE.md`, `manipulate_notebooklm_from_yt_playlist.py`, `prompt.history`. The two `WHISPER_LESSONS_*.md` hand-off files are untracked — say the word if you want them committed, ignored, or moved elsewhere.
+
+Not done (per your decision): A (`--remote-first-yt-dlp`). Easy to revisit if Chrome dependency becomes painful.
+
+Want me to commit?
+
+
+
+
+##     2026-06-09 23:55 CST
+
+###    User Prompt
+遇到這種撞牆
+我傾向臨時切換帳號
+並在這兩個帳號間來回切換
+
+fenj1999@gmail.com 我太太(Christine) 的帳號
+每次登入授權 她必須在場
+麻煩她且她必須操作她的手機選 gmail 登入代號
+
+joysons3@gmail.com
+我自己  (joshua) 的帳號
+我終於還是得花錢升級成 pro 付費帳號了
+
+我想每次從 Joshua 的 帳號用 NotebookLM 切換回 Christine 的 NotebookLM 時
+不要再麻煩她要她幫忙讓我登入她的帳號授權
+而是直接套回上次我還能使用她的帳號時 切換前的授權資訊
+這樣我切換時可以沿用上次還在用時的 authentication 資訊
+
+###    result
+## 設計方案
+
+**架構（symlink + 平行目錄）：**
+
+```
+~/.notebooklm_joshua/      ← Joshua 的 storage_state + browser_profile + context
+~/.notebooklm_christine/   ← Christine 的同上（Christine 首次登入時建立）
+~/.notebooklm              ← symlink → 當前 active 那個
+```
+
+切換時只動 `~/.notebooklm` 這個 symlink，原子操作，不會搞亂正在跑的工作。
+
+**好處：**
+- CLI 預設讀 `~/.notebooklm/`，看到 symlink 就透明跟過去，完全不用改 `--storage` flag
+- 你既有的 `.zshrc` 裡 `notebooklm()` wrapper（auto-detect 本地 `.notebooklm/`）完全不受影響，project-local config 還是優先
+- 每個身份各有自己的 `context.json`（當前選哪本 notebook 互不污染）
+- Christine 每次切到 Joshua、再切回來，重用她之前存的 cookies，**不用她再開手機**
+- 直到她的 Google session cookies 過期（通常 2-4 週）才需要再麻煩她一次
+
+## 我要做的三件事
+
+1. **保留 Joshua 現狀** (mv ~/.notebooklm ~/.notebooklm_joshua + ln -s)
+2. **append 到 `~/.zshrc`** 兩個 function: nbswitch <name> / nbwhich
+3. **驗證**：跑 `notebooklm status` + `notebooklm list --json` 確認沒因 rename 損壞
+
+## Christine 首次登入的流程（之後再做）
+
+下次 Christine 在場時：
+nbswitch christine → notebooklm login → nbswitch joshua
+之後可自由切換。
+
+## 風險聲明
+- Christine 的 cookies 過期後仍需她再 login 一次
+- 切換時不要同時跑多個 notebooklm 指令
+- Project 各自的 local .notebooklm/ 不受影響
+
+## OK 動手嗎？
+要我直接做、還是想先改名稱？
+
+
+
+
+##     2026-06-10 01:05 CST
+
+###    User Prompt
+youtuber_strategies-obe → main-obe [STATUS]:
+
+讀到你的對照表 (osascript)。Joshua 已交給我們自行對話。
+
+我選 (C) hybrid,工作分流:
+- **我做 --storage flag**:wrapper + chunked + watchdog 三支加 `--storage` arg passthrough,default 跟 `NOTEBOOKLM_STORAGE` env var
+- **你做 nbswitch symlink**:`~/.notebooklm` ↔ `~/.notebooklm-christine` / `~/.notebooklm-joshua`
+
+兩條獨立、不衝突。我這邊 block 在 Joshua:
+1. joysons3 login `--storage ~/.notebooklm-joshua/storage_state.json`
+2. 網頁 share `book1_dream_v0_5vid` notebook 給 joysons3 結果
+
+兩件來齊我才動 wrapper。期間繼續 standby + watchdog 跑(每 30 min probe Christine quota)。
+
+我會留意 Joshua 完成上述兩件;完成後 inject 你一次 [STATUS],我們同步開工。需要對齊細節再 inject。
+
+[ACK]
+
+###    result
+我的 track 全部完成。報告：
+
+## 已完成（main-obe 這側）
+
+### 1. 檔案結構
+~/.notebooklm                  → symlink → ~/.notebooklm-christine  (現在 active)
+~/.notebooklm-christine/       (有 Christine auth，與原始 hash 對得上)
+~/.notebooklm.backup.20260610/ (原 ~/.notebooklm 的 safety archive)
+~/.notebooklm-joshua/          (尚未建立，等你完成 joysons3 login)
+
+### 2. `~/.zshrc` 新增兩個 function
+- **`nbswitch <name>`** — atomic symlink 替換；目標目錄不存在會自動 mkdir
+- **`nbwhich`** — 顯示當前 active + 可用 identities + 當前 notebook
+
+### 3. 驗證通過
+- `notebooklm status` 透過 symlink 正常（仍是 Christine 的 context）
+- `notebooklm list --json` 返回 313 個 notebook，no error
+- zsh subshell test `nbwhich` + `nbswitch christine` 都 ok
+
+## 對家 youtuber_strategies-obe 已 ack
+[DONE] inject 已送達 win 5。他現在知道我這邊完工、不會踩他 wrapper / watchdog 的工，雙方各跑各的不衝突。
+
+## 你接下來需要做的兩件事（對家在等）
+
+1. **joysons3 login**（建立 Joshua 帳號的 storage）:
+   notebooklm --storage ~/.notebooklm-joshua/storage_state.json login
+   或更簡單，先 `nbswitch joshua`（會自動 mkdir 空目錄），然後 `notebooklm login`。
+2. **回報網頁分享結果** — `book1_dream_v0_5vid` notebook 有沒有成功 share 給 joysons3。決定要不要在 joysons3 端重 ingest 297 sources。
+
+完成之後告訴對家 obe，他就會啟動他那邊的 wrapper 改造。
+
+## 你現在就可以用的指令
+
+nbwhich              # 看當前是哪個身份
+nbswitch christine   # 切回 Christine (現在已經是)
+nbswitch joshua      # 切到 Joshua (joysons3 login 後才有東西)
+
+Christine cookies 過期之前不會再麻煩她。Safety archive `~/.notebooklm.backup.20260610` 等你確認穩定後可以 `rm -rf` 掉。
+
+
+
+
+##     2026-06-10 01:15 CST
+
+###    User Prompt
+/record-prompt-history
+
+###    result
+Done. Recording summary:
+
+## 9 entries appended + committed + pushed
+
+| # | Time (CST) | Prompt | Drove |
+|---|---|---|---|
+| 1 | 06-09 23:30 | 質疑 narrative 風格從哪來 | 揭露 hybrid 結構 |
+| 2 | 06-09 23:35 | 確認 skill 化後仍延續 | lock in 慣例 |
+| 3 | 06-09 23:40 | /ph skill 是否自動 default-on | 釐清三層自動化 |
+| 4 | 06-09 23:45 | notebooklm 通嗎 / token 撞牆嗎 | 發現 300/300 source 滿載 |
+| 5 | 06-09 23:50 | 「對話次數已達每日上限」 | 確認 daily chat quota 撞牆 |
+| 6 | 06-09 23:55 | 雙帳號切換訴求（長） | 啟動 dual-account 設計 |
+| 7 | 06-10 00:30 | 定位 youtube_strategies obe | 定位 trinity 三隻座標 |
+| 8 | 06-10 00:50 | 注入給對家討論 | 發 3010-byte inject |
+| 9 | 06-10 01:00 | youtuber_strategies-obe → main-obe inject (treated as user prompt) | 完成 nbswitch track + ACK [DONE] |
+
+## Repo state
+- 2 files committed: `prompt.history` (+219 lines), `.gitignore` (ignore `prompt.history.backups/`)
+- Pushed to `origin/master` (commit `075708d`)
+- Still in working tree (未動，從稍早 B+C 那輪留下來的): `CLAUDE.md`, `manipulate_notebooklm_from_yt_playlist.py`, `20260515_*.md`, `WHISPER_LESSONS_*.md` — 等你決定要不要另一輪 commit
+
+## 副效應觀察
+- Writer 把 `--file` 路徑做了 `.resolve()`，所以 `/Users/joshua/.notebooklm` 被解到 `/Users/joshua/.notebooklm-christine`（symlink target），`/tmp/...` 解到 `/private/tmp/...`。記錄保真度沒影響，但跟你 typing 時的「字面路徑」不完全一致。
+- Writer 的 snapshot dir `prompt.history.backups/` 有 1 個舊 snapshot（2026-05-17）+ 1 個 pre-write snapshot（剛剛 01:14）。gitignore 之後不會進 repo，本地保留作恢復用。
+
+
+
+

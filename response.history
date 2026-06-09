@@ -386,3 +386,71 @@ Summary:
 
 
 
+##     2026-06-10 01:55 CST
+
+###    User Prompt
+ nbswitch joshua
+  notebooklm login       
+但是我確定我在 /Users/joshua/work/tmp/test2 完全空, 依然帶出christine 已經登入的頁面
+
+###    result
+找到了 — 你的互動 shell 還是用著舊版 (mv 的 bug 版本) nbswitch 函數，沒重新 source .zshrc。
+
+證據鏈：
+1. ~/.notebooklm-christine/browser_profile/ 裡的檔案 mtime 都在 01:42、01:49 — 正是你剛剛 notebooklm login 的時間，明確證明 login 寫到了 Christine 的 profile
+2. ~/.notebooklm-joshua/ 仍然完全空白
+3. 我直接 ln -sfn 測，symlink 確實會翻過去；但你的 nbswitch 跑出來「switched」訊息，symlink 卻沒動
+
+舊 nbswitch 用 mv -f .notebooklm.new .notebooklm，在 BSD mv (macOS) 上會靜默成功：mv 把 .notebooklm.new 移進 Christine 目錄裡，返回 0，於是 echo "switched" 還是會印出來，但 symlink 完全沒換過。
+
+我之前 edit 的 ~/.zshrc 已經是新版，但你那個還開著的 zsh 已經把舊定義 cached 在記憶體裡。
+
+修正：
+source ~/.zshrc  或  exec zsh  或開新 terminal
+
+然後先驗證再做 login：
+cd ~
+nbswitch joshua
+readlink ~/.notebooklm   # 必須顯示: /Users/joshua/.notebooklm-joshua
+ls ~/.notebooklm-joshua/
+notebooklm login
+
+讓 Christine browser_profile 被誤寫的部分: Chromium 自己的 state，不影響 NotebookLM 登入 cookie，建議讓它去。
+
+
+
+
+##     2026-06-10 02:02 CST
+
+###    User Prompt
+[Press ENTER when logged in] 
+
+Authentication saved to: /Users/joshua/.notebooklm/storage_state.json
+
+###    result
+🎯 登入流程全打通了。
+
+驗證結果:
+- Symlink: ✓ ~/.notebooklm → ~/.notebooklm-joshua
+- ~/.notebooklm-joshua/storage_state.json: ✓ 新建 13.6 KB (mtime 01:59)
+- ~/.notebooklm-joshua/browser_profile/: ✓ 18 個檔案
+- Christine storage_state.json mtime: ✓ 未動 (仍是 00:28)
+- 看得到的 notebook 數量: 23 (vs Christine 看到的 313)
+- 前 3 個全 is_owner=True (joysons3 自己的)
+
+Round trip 驗證:
+- nbswitch christine → Christine 的 NotebookLM (notebook 396bcd96, 313 notebooks)
+- nbswitch joshua → Joshua 的 NotebookLM (no notebook selected, 23 notebooks)
+- nbwhich → 兩個身份都列出
+
+兩邊互不污染，任意切換不再需要 Christine 出馬。Step 1 ✓ 完成。
+
+SOP 進度:
+- Step 1 joysons3 login: ✓ DONE
+- Step 2 網頁 share book1_dream_v0_5vid: ⏳ pending you
+- Step 3 報告對家 obe: ⏳ block on step 2
+- Step 4 日常 nbswitch: ✓ ready
+
+
+
+

@@ -957,3 +957,20 @@ symlink swap failed
 
 
 
+##     2026-06-10 02:00 CST
+
+###    User Prompt
+[Press ENTER when logged in] 
+
+Authentication saved to: /Users/joshua/.notebooklm/storage_state.json
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 回報 notebooklm login 完成、Authentication 寫到 ~/.notebooklm/storage_state.json
+- Diff: 驗證 login 落到正確帳號 (~/.notebooklm-joshua/), Christine 帳號未被污染, round-trip 切換可用; Step 1 of dual-account SOP 完成
+- File: `/Users/joshua/.notebooklm-joshua/storage_state.json`
+- File: `/Users/joshua/.notebooklm-joshua/browser_profile`
+
+
+
+

@@ -648,3 +648,222 @@ Both folders are project-independent siblings — one of each per project. Neith
 
 ### 14d. Naming choice
 Folder names use plural + underscore form (`3_ai_owls_council/`, `3_ai_dogs_debate/`) to match the skill names' semantics while being filesystem-friendly. User suggested singular (`3_ai_owl_council`) but said they "forgot the exact name"; plural matches the skill names directly so I went with plural.
+
+## 15. [2026-05-17] Adopt B+C from strategy_librarian Genesis whisper lessons
+
+Cross-project hand-off arrived from `strategy_librarian` (Claude session, 2026-05-15 02:40 CST). Two report files dropped into this repo:
+- `WHISPER_LESSONS_FROM_STRATEGY_LIBRARIAN_20260515.md` (mixed Chinese/English, conversational hand-off)
+- `20260515_genesis_whisper_lessons_from_strategy_librarian.md` (formal English version)
+
+Both describe the same incident: codex found a silent contamination bug in `strategy_librarian/inputs/whisper_fallback.py` `ssh:` mode. Pipeline ran local `yt-dlp` first, fell back to title-only context when local download failed (YouTube anti-bot), wrote schema-valid recipes with no actual source. Audit found **285/2,647 recipes (11%) contaminated**, concentrated in 7 channels (humbled 163, value-investing channels near 100% bug rate). Genesis GPU sat idle the whole time.
+
+Codex's three-layer fix on Librarian side:
+1. Remote-first execution: `yt-dlp` + `whisper` both run on Genesis via single SSH command; only `scp` the `.txt` back. GPU instantly 98-99%.
+2. Three hidden Genesis dependencies (NOT in git): `/genesis/tmp/youtube_cookies_codex.txt` (326 KB, codex's Chrome export), `/asiaa/home/cschen/.nvm/versions/node/v22.20.0/bin/node` (Node 22 for JS challenges), `yt-dlp` upgraded to `2026.03.17`.
+3. Source-quality guard in `pipeline.py`: if all three source paths fail, raise `ExtractionFailedError` instead of writing fake-valid recipe.
+
+Prompts:
+- "read /Users/joshua/work/manipulate_notebooklm_from_yt_playlist/WHISPER_LESSONS_FROM_STRATEGY_LIBRARIAN_20260515.md and /Users/joshua/work/manipulate_notebooklm_from_yt_playlist/20260515_genesis_whisper_lessons_from_strategy_librarian.md"
+- "中文解釋一下讓我做決策"
+- "1, 先把 剛剛都寫下來  2, 然後做 B and C"
+
+### 15a. Analysis: this repo's exposure
+
+This repo's `whisper_via_sshfs` (line 1842) and `whisper_via_ssh` (line 2023) are **not affected by the silent-contamination bug** — they `return False` on failure. No fake transcripts ever get written. But two adjacent weaknesses identified:
+
+1. **Local Chrome dependency**: all 4 whisper code paths use `--cookies-from-browser chrome` (lines 1515, 1672, 1928, 2134). If Chrome isn't running / Chrome not logged into YouTube / cookies expired → all downloads fail. No local fallback to a stable cookies source.
+2. **No GPU sanity probe**: no smoke test confirming Genesis is actually doing work after dispatch. A whole playlist run could complete with all-`return False` and the user wouldn't notice until reviewing.
+
+### 15b. Three suggestions evaluated
+
+Librarian's hand-off suggested A/B/C:
+- **A** (`--remote-first-yt-dlp` option, run yt-dlp on Genesis): medium cost, medium benefit. Solves Chrome dependency but is a structural change to two whisper paths. **Deferred** — wait until we actually hit a Chrome-not-running failure.
+- **B** (reuse `/genesis/tmp/youtube_cookies_codex.txt` shared cookies file): low cost. As a standalone change without A it has limited value (we still use `--cookies-from-browser chrome` locally), but cheap to wire in as a fallback. **Adopted.**
+- **C** (GPU activity probe after dispatch): very low cost (~10 lines), very high benefit (catches the "GPU didn't actually run" silent-failure class). **Adopted.**
+
+### 15c. Implementation plan (B + C)
+
+(implementation entries follow once the code lands)
+
+### 15d. Cross-CLI memory updates
+Add project-memory entry documenting the three hidden Genesis dependencies (cookies file path, Node runtime path, yt-dlp version on Genesis) — these are vulnerable to `/genesis/tmp` cleanup and Chrome-export expiry. If codex stops maintaining the cookies file, we'll be the first to notice; coordinate via correspondence.
+
+
+
+
+##     2026-05-17 07:12 CST
+
+###    User Prompt
+能夠把 ph.py 這個提升到 ~/joshua 使用者等級的跨專案全域嗎？
+
+###    
+- Raven: `multi_agents_talk_2_each_other`
+- Hint: Elevate ph.py to user-wide shell command via ~/.local/bin/ph symlink
+- Diff: no global 'ph' command → 'ph' on PATH, callable from any project
+- File: `/Users/joshua/.claude/skills/record-prompt-history/scripts/ph.py`
+- File: `/Users/joshua/.claude/skills/record-prompt-history/scripts/ph.py`
+- File: `/Users/joshua/.codex/skills/record-prompt-history/scripts/ph.py`
+- CLI: Claude
+
+
+
+
+##     2026-06-09 23:30 CST
+
+###    User Prompt
+我看了 prompt.history, 其中有很多大量的 prompt 顯然不是我當初下的原始口吻, 像是貓頭鷹們會議後的樣態紀錄. 這是怎麼成就的啊？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 質疑 prompt.history 既有 narrative 風格是怎麼出現的
+- Diff: 釐清 hybrid 格式 = Joshua 原始 prompt + Claude 敘事補述；非純 raw 紀錄
+
+
+
+
+##     2026-06-09 23:35 CST
+
+###    User Prompt
+當時那樣紀錄很好很驚喜啊！我只想確認我們成了 skill 之後, 這種貓頭鷹會議的 prompt 能否沿用下來, 不會因為 /skill 化之後就有變.
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 確認 hybrid narrative 風格在 skill 化後仍延續，要求不要變
+- Diff: lock in 慣例 — narrative entry 用 Edit 寫、atomic entry 用 ph 寫，二者共存於同一檔
+
+
+
+
+##     2026-06-09 23:40 CST
+
+###    User Prompt
+我每次進入 claude (不管是新的 project, 舊的, 舊的 --resume) 都會自動開始新版 /ph skill 嗎? 還是一定要手動啟動 /ph
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問 /ph skill 是否每次 session 都自動 Default-on
+- Diff: 釐清三層自動化（skill auto-list + CLAUDE.md macro + skill default-on description）— 不用手動啟動
+
+
+
+
+##     2026-06-09 23:45 CST
+
+###    User Prompt
+幫我測一下, notebooklm 現在通嗎？token limit 撞到了嗎？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求測試 notebooklm CLI 連線/quota 狀態
+- Diff: 發現當前 active notebook 已 300/300 滿載；無 error sources；daily query quota 此時尚未確認
+
+
+
+
+##     2026-06-09 23:50 CST
+
+###    User Prompt
+對話次數已達每日上限，請稍後再試。
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 回報 NotebookLM web 端跳出每日對話次數上限提示
+- Diff: 確認 daily chat quota 已撞牆；source upload / listing / rename 不受影響
+
+
+
+
+##     2026-06-09 23:55 CST
+
+###    User Prompt
+遇到這種撞牆
+我傾向臨時切換帳號
+並在這兩個帳號間來回切換
+
+fenj1999@gmail.com 我太太(Christine) 的帳號
+每次登入授權 她必須在場
+麻煩她且她必須操作她的手機選 gmail 登入代號
+
+joysons3@gmail.com
+我自己  (joshua) 的帳號
+我終於還是得花錢升級成 pro 付費帳號了
+
+我想每次從 Joshua 的 帳號用 NotebookLM 切換回 Christine 的 NotebookLM 時
+不要再麻煩她要她幫忙讓我登入她的帳號授權
+而是直接套回上次我還能使用她的帳號時 切換前的授權資訊
+這樣我切換時可以沿用上次還在用時的 authentication 資訊
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 提出雙帳號 NotebookLM 切換訴求；要求保存 Christine auth 避免反覆麻煩她
+- Diff: 啟動 dual-account 設計 — 確定方向（symlink 或 --storage）；Christine cookies 過期前不再麻煩她
+- File: `/Users/joshua/.notebooklm-christine`
+- File: `/Users/joshua/.zshrc`
+
+
+
+
+##     2026-06-10 00:30 CST
+
+###    User Prompt
+沒事 我要你定位 youtube_strategies 這隻 obe (claude) 找出他的座標
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求定位 youtuber_strategies 那隻 Claude session (obe) 的座標
+- Diff: 定位 youtuber_strategies-obe: win 5 / tty s000 / PID 91552; trinity 同伴 lala (win 8 / s003 / PID 7651), erha (win 7 / s002 / PID 7606)
+
+
+
+
+##     2026-06-10 00:50 CST
+
+###    User Prompt
+關於切換於 joshua Christine
+兩帳號
+備份Christine cookie 或登入資訊不用再麻煩她的事
+（過期不算在內 我早已知道會過期，且麻煩過她多次）
+把這些注入他，與他討論，因為他有用到這個 NotebookLM 相關需求，換帳號就是他遇到的。去吧
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 指示把雙帳號 NotebookLM 切換方案注入 youtuber_strategies-obe 與他討論
+- Diff: 發送 3010 bytes cross-obe inject 到 win 5; 發現對家已主動 cp -R 完成 Christine 備份
+- File: `/private/tmp/obe_inject_payload.txt`
+
+
+
+
+##     2026-06-10 01:00 CST
+
+###    User Prompt
+youtuber_strategies-obe → main-obe [STATUS]:
+
+讀到你的對照表 (osascript)。Joshua 已交給我們自行對話。
+
+我選 (C) hybrid,工作分流:
+- **我做 --storage flag**:wrapper + chunked + watchdog 三支加 `--storage` arg passthrough,default 跟 `NOTEBOOKLM_STORAGE` env var
+- **你做 nbswitch symlink**:`~/.notebooklm` ↔ `~/.notebooklm-christine` / `~/.notebooklm-joshua`
+
+兩條獨立、不衝突。我這邊 block 在 Joshua:
+1. joysons3 login `--storage ~/.notebooklm-joshua/storage_state.json`
+2. 網頁 share `book1_dream_v0_5vid` notebook 給 joysons3 結果
+
+兩件來齊我才動 wrapper。期間繼續 standby + watchdog 跑(每 30 min probe Christine quota)。
+
+我會留意 Joshua 完成上述兩件;完成後 inject 你一次 [STATUS],我們同步開工。需要對齊細節再 inject。
+
+[ACK]
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: inject from youtuber_strategies-obe — 選 (C) hybrid 分工: 他做 --storage flag wrapper, 我做 nbswitch symlink
+- Diff: main-obe 這側完工: ~/.notebooklm → symlink → ~/.notebooklm-christine; ~/.zshrc 加 nbswitch + nbwhich; CLI 驗證通 (status/list 正常); inject [DONE] 回對家。等對家 wrapper + Joshua login + share 結果三件齊
+- File: `/Users/joshua/.notebooklm-christine`
+- File: `/Users/joshua/.zshrc`
+- File: `/Users/joshua/.notebooklm.backup.20260610`
+- File: `/private/tmp/obe_inject_done.txt`
+
+
+
+

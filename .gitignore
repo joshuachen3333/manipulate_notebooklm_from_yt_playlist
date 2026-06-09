@@ -29,3 +29,6 @@ reboot_over_and_over.md
 
 # Claude Code session-local settings
 .claude/
+
+# prompt.history writer snapshots (local recovery only; git tracks the real history)
+prompt.history.backups/

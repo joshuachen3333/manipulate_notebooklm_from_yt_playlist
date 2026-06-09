@@ -867,3 +867,33 @@ youtuber_strategies-obe → main-obe [STATUS]:
 
 
 
+##     2026-06-10 01:20 CST
+
+###    User Prompt
+納入第二 NBLM 帳號完工了嗎？
+我現在該做的 SOP 是什麼？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問雙帳號 NotebookLM 整合是否完工 + 接下來該做的 SOP
+- Diff: 輸出 SOP 4 步驟 (joysons3 login → book1_dream 網頁 share → 報告對家 obe → 日常切換) + 流程圖 + 風險提醒
+
+
+
+
+##     2026-06-10 01:30 CST
+
+###    User Prompt
+你為何停止append prompt.history and response.history?
+修改一下 /logoutput, and /ph  一但執行這兩個 skill, 從此以後都要一直 append output or prompt 繼續下去, 不要總是只執行那一次.
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 質問為何前面停止 append；要求改 /ph 和 /logoutput 成 switch (file-existence activation)
+- Diff: 修改 record-prompt-history + logoutput SKILL.md (frontmatter + When to invoke)；file-existence = activation marker；補登 SOP 問答 + 此 directive
+- File: `/Users/joshua/.claude/skills/record-prompt-history/SKILL.md`
+- File: `/Users/joshua/.claude/skills/logoutput/SKILL.md`
+
+
+
+

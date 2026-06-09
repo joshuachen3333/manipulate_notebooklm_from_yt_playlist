@@ -974,3 +974,17 @@ Authentication saved to: /Users/joshua/.notebooklm/storage_state.json
 
 
 
+##     2026-06-10 02:05 CST
+
+###    User Prompt
+幫我去信一下 對家 （librarian, 也就是 youtuber_strategies）你講比較清楚
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 指示寫 [STATUS] inject 給對家 librarian (youtuber_strategies-obe)
+- Diff: 送出 2827-byte inject 到 win 5: Step 1 ✓ + 兩個踩坑 (mv-on-symlink-dir + cwd wrapper NOTEBOOKLM_HOME 劫持) + Step 2 還 pending Joshua 網頁 share；對家 recap 顯示他在等 share 完成才能啟動剩 174 部 batch
+- File: `/private/tmp/obe_inject_step1_done.txt`
+
+
+
+

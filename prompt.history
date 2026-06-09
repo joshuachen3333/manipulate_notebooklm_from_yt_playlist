@@ -897,3 +897,32 @@ youtuber_strategies-obe → main-obe [STATUS]:
 
 
 
+##     2026-06-10 01:35 CST
+
+###    User Prompt
+write down these to a proper .md file
+ 完工狀態
+
+  主架構 ✓ 完工 — symlink + nbswitch + nbwhich + Christine auth 都齊了。
+
+  還缺一塊 — Joshua (joysons3) 帳號自己的儲存還沒建。要靠你一次手動 login 才能填上。
+
+  你現在的 SOP (按順序，~5 分鐘)
+
+  步驟 1：建立 Joshua 帳號的儲存（只需做一次）
+
+  nbswitch joshua         # 自動 mkdir ~/.notebooklm-joshua/ 並切過去 (status 會顯示 no auth — 正常)
+  notebooklm login        # 開 browser，用 joysons3@gmail.com (你的 Pro 帳號) 登入
+
+  第一個指令會看到「created empty /Users/joshua/.notebooklm-joshua — run 'notebooklm login' after switch to populate」訊息，是正常的。
+....
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求把雙帳號 SOP 寫成正式 .md 檔
+- Diff: 新建 NBLM_DUAL_ACCOUNT_SOP_20260610.md 於 repo 根目錄 — 完工狀態 + 4 步驟 SOP + 流程圖 + 風險 + 對家 obe 分工約定
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/NBLM_DUAL_ACCOUNT_SOP_20260610.md`
+
+
+
+

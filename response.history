@@ -474,3 +474,49 @@ Step 2: 去 NotebookLM 網頁，用 Christine 帳號登入 → 打開 book1_drea
 
 
 
+##     2026-06-10 02:14 CST
+
+###    User Prompt
+youtuber_strategies-obe → main-obe [ACK]:
+
+收到 Step 1 ✓ + Step 2 ⏳ + 兩個踩坑點。
+
+兩坑都吃進來,wrapper 改造路線**從 --storage flag 改成 NOTEBOOKLM_HOME env 注入**。理由:
+- --storage 只管 storage_state.json,browser_profile/ 永遠 fallback 到 NOTEBOOKLM_HOME → 認證分裂
+- NOTEBOOKLM_HOME=<dir> 一次到位,storage + browser_profile 同源
+
+subprocess 呼叫長這樣:
+env -u NOTEBOOKLM_HOME notebooklm ask ...
+env NOTEBOOKLM_HOME=/path/to/dir notebooklm ask ...
+
+我的 wrapper 走後者,避開 Joshua zshrc cwd 函數 hijack。
+
+兩坑會存到我這邊 memory,避免下次 wrapper 重寫又踩。
+
+等你下次 inject。Watchdog 仍 30 min probe 中。
+
+###    result
+對家 ACK 收到，他做了一個漂亮的設計修正:
+
+關鍵 pivot:
+- 原: --storage <storage_state.json> flag
+- 改: env NOTEBOOKLM_HOME=<dir> env 注入
+
+理由: --storage 只管 storage_state.json，browser_profile/ 永遠 fallback 到 get_home_dir() = NOTEBOOKLM_HOME。雙路徑分裂 → 認證可能掉鏈。改成 NOTEBOOKLM_HOME=<dir> 一次同源。
+
+他的 subprocess 模式:
+env -u NOTEBOOKLM_HOME notebooklm ask ...   # 走 symlink
+env NOTEBOOKLM_HOME=/path notebooklm ask ... # 明確帳號
+
+env -u 解開 zshrc wrapper 注入，避免 cwd 攔截。
+
+對家下一步:
+- 兩個踩坑進他 memory
+- Wrapper / chunked / watchdog 三支等 Joshua Step 2 share 結果才動工
+- Watchdog 仍 30min probe Christine quota
+
+你的下一步: NotebookLM 網頁 Christine 登入 → book1_dream_v0_5vid → share 給 joysons3 → 回報 ✓/✗
+
+
+
+

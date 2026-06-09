@@ -327,3 +327,62 @@ nbswitch christine
 
 
 
+##     2026-06-10 01:45 CST
+
+###    User Prompt
+nbswitch joshua
+mv: /Users/joshua/.notebooklm.new and /Users/joshua/.notebooklm/.notebooklm.new are identical
+symlink swap failed
+
+我做第二次 (dir already exists) 就會這樣
+
+###    result
+抓到 bug — 是 mv 在 macOS 的細節：當目標 ~/.notebooklm 已經是 symlink-to-directory 時，mv -f source dest 會把 dest 當「目錄」處理，把 source 移進去而不是覆蓋它。
+
+第二次跑就會試圖把 .notebooklm.new 移到自己之前已經移進去的位置 → 「identical」報錯。
+
+修正：跳過 .new 暫存檔的 mv 替換，直接用 ln -sfn (其中 -n 表示不要 follow 既有 symlink)。原子性犧牲很少，但簡單可靠。
+
+修了 ~/.zshrc 的 nbswitch function：去掉 .new + mv 兩步驟，改成 ln -sfn 直接替換 ~/.notebooklm。
+
+4 個測試 scenario 全通:
+- nbswitch joshua (第一次) ✓
+- nbswitch joshua 再來一次 (bug repro) ✓ no-op
+- nbswitch christine 切回去 ✓
+- nbswitch joshua round-trip ✓
+
+順手清掉 2 個 orphan .notebooklm.new symlink (你前兩次失敗各留下一個)。最終 ~/ 下乾淨 4 個檔/目錄。
+
+[第二輪] 進一步發現: 你的 notebooklm login 顯示 Christine 已登入頁面，是因為 ~/.zshrc 的 notebooklm() wrapper 偵測到 cwd 有 .notebooklm/ 子目錄，就 NOTEBOOKLM_HOME=$(pwd)/.notebooklm 完全繞過全域 symlink。
+
+修正命令:
+- cd ~ 後 nbswitch joshua + notebooklm login
+- 或 notebooklm --storage ~/.notebooklm-joshua/storage_state.json login (絕對路徑 bypass wrapper)
+
+也順手在 nbswitch 函數加了警告: 切換時若 cwd 有 .notebooklm/ (且 cwd ≠ HOME)，警告 wrapper 會 hijack 路由，並提示用 --storage 絕對路徑解決。
+
+
+
+
+##     2026-06-10 01:52 CST
+
+###    User Prompt
+好的, 合理, 每個目錄當初是用哪個帳號, 就先用那個帳號無妨
+
+###    result
+OK，warning 也不會誤觸發了。先把這幾輪 log + commit + push 一起收尾。
+
+Summary:
+- nbswitch 函數: 去 mv 改 ln -sfn + 加 cwd-local .notebooklm/ 警告
+- 2 個 orphan .notebooklm.new symlink 已清
+- 設計決策 lock in: per-project .notebooklm/ 綁原始身份，全域 nbswitch 只影響 cwd 無 local config 的場景
+
+你接下來:
+1. cd ~ (或任何沒有 .notebooklm/ 的位置)
+2. nbswitch joshua
+3. notebooklm login (這次會用空的 joshua browser profile，真的彈出登入頁)
+4. 完成 OAuth → 回來告訴我 (我會 inject [STATUS] 給對家 obe)
+
+
+
+

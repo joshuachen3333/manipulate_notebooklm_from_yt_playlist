@@ -926,3 +926,34 @@ write down these to a proper .md file
 
 
 
+##     2026-06-10 01:40 CST
+
+###    User Prompt
+nbswitch joshua
+mv: /Users/joshua/.notebooklm.new and /Users/joshua/.notebooklm/.notebooklm.new are identical
+symlink swap failed
+
+我做第二次 (dir already exists) 就會這樣
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 回報 nbswitch joshua 第二次跑時的 mv error；要求修正
+- Diff: 找到 root cause (BSD mv 把 symlink-to-dir 當目錄處理，把 source 移進去)；改 nbswitch 用 ln -sfn 直接替換 ~/.notebooklm，跳過 .new 暫存檔；清掉 2 個 orphan .notebooklm.new symlink；4 個測試 scenario 全通
+- File: `/Users/joshua/.zshrc`
+
+
+
+
+##     2026-06-10 01:50 CST
+
+###    User Prompt
+好的, 合理, 每個目錄當初是用哪個帳號, 就先用那個帳號無妨
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 確認對「每個目錄當初用哪個帳號就先用那個」的 wrapper 路由行為沒意見
+- Diff: lock in 設計決策: 不再嘗試強制統一身份；project-local .notebooklm/ 綁定當初身份，全域 symlink 只影響 cwd 無 .notebooklm/ 的場景
+
+
+
+

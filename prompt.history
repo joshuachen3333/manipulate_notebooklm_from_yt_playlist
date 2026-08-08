@@ -1114,3 +1114,28 @@ manipulate_notebooklm_from_yt_playlist --update -v → Checking NotebookLM auth.
 
 
 
+##     2026-08-08 13:15 CST
+
+###    User Prompt
+for a new playlist, do I just do --auto https://www.youtube.com/watch?v=LPEuY9zWbdw&list=PLH1v_wCmILkqdy3rVsg5nIgptjbdKVCSa at /Users/joshua/work/youtube_list/台語漢字學/陳世明老師 and that's all?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問新 playlist 的標準流程是否就是在目標目錄下 --auto <url>
+
+
+
+
+##     2026-08-08 13:17 CST
+
+###    User Prompt
+but that's exactly what I want. so tks
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 確認要的就是三層結構 台語漢字學/陳世明老師/臺語漢字學/，不需改名
+- Diff: 結論：照原本計畫在 台語漢字學/陳世明老師/ 底下跑 --auto，唯一必要修正是把含 & 的 URL 用引號包起來（zsh 否則會把指令丟背景）。不刪空資料夾、不動 index.list 第 3 行
+
+
+
+

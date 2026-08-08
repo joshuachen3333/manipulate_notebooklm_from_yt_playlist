@@ -644,3 +644,14 @@ keep asking for login!!! (--update 卡在 auth EXPIRED 迴圈)
 
 
 
+##     2026-08-08 13:17 CST
+
+###    User Prompt
+but that's exactly what I want. so tks
+
+###    result
+了解，那就照你原本的做，唯一要改的就是把 URL 用引號包起來（& 會被 zsh 當背景符號）。cd 到 陳世明老師/ 後跑 --auto "<url>"，會建出 臺語漢字學/ 子資料夾並開始上傳 120 支。開跑前確認已重新 notebooklm login。跑的期間我不碰 auth 也不改腳本；有狀況把 log 貼過來。
+
+
+
+

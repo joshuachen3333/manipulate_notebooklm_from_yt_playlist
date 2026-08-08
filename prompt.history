@@ -1296,3 +1296,16 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:13 CST
+
+###    User Prompt
+遠端 genesis whisper 輸出時能否就控制為正體, 不要用簡體
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問遠端 genesis whisper 能否直接輸出正體、不要先簡體再轉
+- Diff: 查出兩個可改的槓桿：(1) --initial_prompt 目前三處都只有「繁體中文」四個字，過弱；改成一整句臺灣正體中文的引導句可大幅提高 decoder 直接輸出正體的機率。(2) convert_to_traditional 用的是通用 s2t，實測 s2t 會產出「裏面 / 着手」（大陸繁體字形），s2tw 才給「裡面 / 著手」（臺灣標準字形）—— 對台語漢字學這種字形敏感的內容有差。真正的重點是 1→多 還原題（发→發/髮、干→乾/幹/干、后→後/后）：whisper 若直接吐正體就沒有這道題，opencc 只留作保險。另建議 per-folder .whisper_prompt 讓台語資料夾用專屬引導句。因 sweep（58473/58578）仍在跑，暫不動刀
+
+
+
+

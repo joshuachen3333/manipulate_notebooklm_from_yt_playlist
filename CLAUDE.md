@@ -343,7 +343,7 @@ Use `--no-local-fallback` to exit instead of falling back to local whisper.
    - --language Chinese
    - --initial_prompt <WHISPER_INITIAL_PROMPT, or the folder's .whisper_prompt>
    - --verbose True (shows real-time progress)
-4. Convert transcript 簡體 → 正體中文 (opencc `s2tw`)
+4. Convert transcript 簡體 → 正體中文 (opencc `s2tw`, Taiwan standard)
 5. Prepend `#URL <video_url>` as first line (traceability)
 6. Save to transcripts/<title>.txt
 7. Add as text source to NotebookLM
@@ -565,7 +565,7 @@ Format: `<index> <url>`
 | `text_back_to_video_effort(...)` | Replace whisper text sources with native YouTube sources (no-ops under `.keep_transcripts`) |
 | `resync_text_sources(...)` | Push locally corrected transcripts back over drifted cloud text sources |
 | `text_over_video(...)` | Replace native YouTube sources with the local corrected transcript |
-| `normalize_transcripts_to_taiwan(path)` | Rewrite local transcripts with Taiwan-standard glyphs (`t2tw`, in place) |
+| `normalize_tree_to_taiwan(path)` | Rewrite transcripts + index.list with Taiwan-standard glyphs (`t2tw`, in place, prompts first) |
 | `load_local_transcripts(dir)` | Map canonical URL → local txt via the `#URL` header (never by filename) |
 | `whisper_initial_prompt()` | Folder's `.whisper_prompt`, else `WHISPER_INITIAL_PROMPT` |
 | `transcripts_are_protected()` | True when `.keep_transcripts` is present in cwd |
@@ -675,16 +675,33 @@ notebooklm source rename <source_id> "New Title"
    - Helps sort/identify sources in NotebookLM
    - Regex to extract: `\[(\d+)\]`
 
-2. **正體中文 Conversion** — two configs, and the split is load-bearing:
+2. **正體中文 Conversion is Taiwan-standard everywhere** — `convert_to_traditional()`
+   uses **`s2tw`**, and every generated string goes through it: transcript
+   bodies, source titles, notebook titles, folder names, mp3/txt filenames.
+   There is no second config and no opt-out; Taiwan orthography is the house
+   standard for all generated text.
 
-   | Applied to | Config | Why |
-   |---|---|---|
-   | Source title in NotebookLM, folder names, mp3/txt filenames | `s2t` (`convert_to_traditional(x)`) | Every existing folder and cloud notebook was named with it. Switching the default would make the next `--update` rename folders on disk *and* in the cloud (measured: 1 of 270 names moves — 林哲羣 → 林哲群). |
-   | Transcript bodies | `s2tw` (`convert_to_traditional(x, taiwan=True)`) | Taiwan-standard glyphs — 裡/著 rather than 裏/着. For 台語漢字學 material the glyph choice *is* the content. |
+   It used to be `s2t` (general Traditional), which produces glyphs no
+   Taiwanese reader uses. Measured across the tree before switching:
 
-   `normalize_to_taiwan()` (`t2tw`) retrofits transcripts written before the
-   Taiwan default existed: `t2tw(s2t(x)) == s2tw(x)`, verified, so
-   `--normalize-tw` fixes them in place with no re-download and no GPU time.
+   | | Count |
+   |---|---|
+   | Video titles corrected (喫→吃, 牀→床, 脣→唇, 羣→群) | 225 of 9,790 |
+   | Folder renames caused | 1 (林哲羣 → 林哲群) |
+   | Notebook renames caused | 1 |
+
+   `normalize_to_taiwan()` (`t2tw`) retrofits what was written under the old
+   config: `t2tw(s2t(x)) == s2tw(x)`, verified, so **`--normalize-tw`** fixes
+   files in place with no re-download and no GPU time. It covers `transcripts/*.txt`
+   *and* `index.list` — the latter verified safe to convert wholesale across all
+   270 files (length-preserving, no ASCII byte touched, East-Asian visual width
+   unchanged, so TSV padding stays aligned). It prints the full file list and
+   prompts before writing; a changed index.list line 3 makes the next `--update`
+   rename the folder and cloud notebook, and changed column-3 titles are pushed
+   by the next `--reindex`.
+
+   Retrofit is **not** automatic — `--normalize-tw` is a standalone mode,
+   never reached from `--auto`/`--update`.
 
 3. **Error Source Cleanup**: Runs at startup AND after each failure to prevent orphaned error entries
 

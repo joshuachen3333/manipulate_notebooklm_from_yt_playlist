@@ -67,7 +67,7 @@ manipulate_notebooklm_from_yt_playlist --list-only "<playlist_url>"
 # 清掉已經有 txt 的音檔，省磁碟
 manipulate_notebooklm_from_yt_playlist --cleanup /Users/joshua/work/youtube_list
 
-# 把本機逐字稿改成臺灣標準字形（裏→裡、着→著）。純本機，不碰雲端
+# 把本機逐字稿 + index.list 改成臺灣標準字形。純本機，會先列清單問你才寫
 manipulate_notebooklm_from_yt_playlist --normalize-tw /path/to/dir
 ```
 

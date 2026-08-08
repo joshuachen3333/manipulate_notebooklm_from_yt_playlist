@@ -1337,3 +1337,21 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:38 CST
+
+###    User Prompt
+臺語漢字學: 以下是臺灣閩南語講座的逐字稿，以臺灣正體中文書寫。
+台語漢字學短篇: 以下是臺灣閩南語講座的逐字稿，以臺灣正體中文書寫。
+
+請確認預設 whisper prompt 不會被通用到 臺灣閩南語 這類專屬的提示
+倒是以臺灣正體中文書寫 這個需要通用, 適用在所有生成文字處理上
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 確認 whisper 預設不含臺灣閩南語專屬提示，但「以臺灣正體中文書寫」須全域通用於所有文字生成
+- Diff: 確認全域 WHISPER_INITIAL_PROMPT 已中性化（僅語體+正字法），閩南語語境只存在於台語漢字學兩個資料夾的 .whisper_prompt。使用者進一步指示：正體中文書寫的要求要涵蓋所有生成文字處理，不限 whisper
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

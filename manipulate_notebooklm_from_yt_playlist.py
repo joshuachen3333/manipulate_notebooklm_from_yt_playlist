@@ -876,20 +876,21 @@ def rename_source(source_id: str, new_title: str) -> bool:
     return success
 
 
-def convert_to_traditional(text: str, taiwan: bool = False) -> str:
-    """Convert Simplified Chinese to Traditional Chinese.
+def convert_to_traditional(text: str) -> str:
+    """Convert Simplified Chinese to Taiwan-standard Traditional Chinese.
 
-    The default (`s2t`) is the general Traditional set. Every existing folder
-    name and cloud notebook title was produced with it, so it stays the default
-    — switching it would make the next --update rename folders on disk and
-    notebooks in the cloud (measured: 1 of 270 folder names would move).
+    `s2tw`, not the general `s2t` this used to use. Everything the script
+    generates goes through here — transcript bodies, source titles, notebook
+    titles, folder names, mp3/txt filenames — and Taiwan orthography is the
+    house standard for all of it.
 
-    `taiwan=True` uses `s2tw`, which picks Taiwan-standard glyphs (裡/著 rather
-    than 裏/着). Used for transcript bodies, where the glyph choice *is* the
-    content — especially for the 台語漢字學 material.
+    The cost of the switch was measured across the whole tree before flipping:
+    1 folder rename (林哲羣 → 林哲群) and 1 notebook rename, against 225 of
+    9,790 video titles that were carrying glyphs no Taiwanese reader uses
+    (喫→吃, 牀→床, 脣→唇, 羣→群). `--normalize-tw` retrofits what is already
+    on disk; see normalize_to_taiwan().
     """
-    converter = opencc.OpenCC('s2tw' if taiwan else 's2t')
-    return converter.convert(text)
+    return opencc.OpenCC('s2tw').convert(text)
 
 
 def normalize_to_taiwan(text: str) -> str:
@@ -1931,7 +1932,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
     with open(whisper_txt, 'r', encoding='utf-8') as f:
         transcript = f.read()
 
-    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
+    traditional_transcript = convert_to_traditional(transcript)
 
     # Overwrite with Traditional Chinese version
     with open(whisper_txt, 'w', encoding='utf-8') as f:
@@ -2177,7 +2178,7 @@ def whisper_via_colab(
     # Convert to Traditional Chinese (Colab may return Simplified).
     # The Colab endpoint takes a single audio input (fn_index=0) with no prompt
     # lever, so this path relies on opencc entirely.
-    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
+    traditional_transcript = convert_to_traditional(transcript)
 
     # Save to txt file
     with open(txt_file, 'w', encoding='utf-8') as f:
@@ -2360,7 +2361,7 @@ def whisper_via_sshfs(
     with open(expected_txt, 'r', encoding='utf-8') as f:
         transcript = f.read()
 
-    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
+    traditional_transcript = convert_to_traditional(transcript)
 
     # Save to local transcripts directory
     transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -2622,7 +2623,7 @@ def whisper_via_ssh(
     # Convert to Traditional Chinese
     with open(local_txt, 'r', encoding='utf-8') as f:
         transcript = f.read()
-    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
+    traditional_transcript = convert_to_traditional(transcript)
     with open(local_txt, 'w', encoding='utf-8') as f:
         f.write(traditional_transcript)
 
@@ -4284,36 +4285,66 @@ def text_over_video(
     return attempted, succeeded, stubs
 
 
-def normalize_transcripts_to_taiwan(start_path: Path) -> tuple[int, int]:
-    """Rewrite every transcripts/*.txt under start_path with Taiwan-standard
-    glyphs (裏→裡, 着→著). Local-only; touches no cloud source.
+def normalize_tree_to_taiwan(start_path: Path) -> tuple[int, int]:
+    """Rewrite transcripts and index.list files under start_path with
+    Taiwan-standard glyphs (裏→裡, 着→著, 喫→吃, 羣→群). Local-only; touches
+    no cloud source.
 
-    Exists because `t2tw(s2t(x)) == s2tw(x)` — transcripts converted before
-    `taiwan=True` can be brought up to standard in place, with no re-download
+    Exists because `t2tw(s2t(x)) == s2tw(x)` — everything written before the
+    `s2tw` switch can be brought up to standard in place, with no re-download
     and no GPU time.
+
+    index.list is safe to convert wholesale: `t2tw` was verified across all 270
+    files to preserve length, leave every ASCII byte (URLs, tabs, digits)
+    untouched, and preserve East-Asian visual width — so the TSV padding stays
+    aligned and no column moves. Note that changes to line 3 (notebook title)
+    make the next --update rename the folder on disk and the notebook in the
+    cloud, and changes to column 3 make the next --reindex rename cloud sources.
 
     Returns (files_scanned, files_changed).
     """
-    scanned = 0
-    changed = 0
-    for txt in sorted(start_path.rglob("transcripts/*.txt")):
-        scanned += 1
+    targets = sorted(start_path.rglob("transcripts/*.txt")) + \
+        sorted(start_path.rglob("index.list"))
+
+    pending = []
+    for path in targets:
         try:
-            original = txt.read_text(encoding='utf-8')
+            original = path.read_text(encoding='utf-8')
         except OSError as e:
-            print(f"  SKIP {txt}: {e}")
+            print(f"  SKIP {path}: {e}")
             continue
         normalized = normalize_to_taiwan(original)
-        if normalized == original:
-            continue
+        if normalized != original:
+            pending.append((path, normalized))
+
+    print(f"Scanned {len(targets)} file(s); {len(pending)} would change.\n")
+    if not pending:
+        return len(targets), 0
+
+    renames = [p for p, _ in pending if p.name == "index.list"]
+    for path, _ in pending:
+        print(f"  {path}")
+    if renames:
+        print(f"\n  ⚠ {len(renames)} index.list file(s) included. If line 3 "
+              "(notebook title) changes, the next --update renames the folder "
+              "and the cloud notebook; changed video titles are pushed by the "
+              "next --reindex.")
+
+    if not AUTO_YES:
+        answer = input(f"\nRewrite {len(pending)} file(s) in place? [y/N] ").strip().lower()
+        if answer != 'y':
+            print("Aborted.")
+            return len(targets), 0
+
+    changed = 0
+    for path, normalized in pending:
         try:
-            txt.write_text(normalized, encoding='utf-8')
+            path.write_text(normalized, encoding='utf-8')
         except OSError as e:
-            print(f"  FAILED {txt}: {e}")
+            print(f"  FAILED {path}: {e}")
             continue
         changed += 1
-        print(f"  {txt}")
-    return scanned, changed
+    return len(targets), changed
 
 
 def parse_remote_sshfs(value: str | None) -> tuple[str, str, str] | None:
@@ -4796,9 +4827,11 @@ def main():
         if not start_path.is_dir():
             print(f"Error: {start_path} is not a directory", file=sys.stderr)
             sys.exit(1)
-        print(f"Normalizing transcripts to Taiwan-standard glyphs under {start_path}/\n")
-        scanned, changed = normalize_transcripts_to_taiwan(start_path)
-        print(f"\nScanned {scanned} transcript(s), rewrote {changed}.")
+        DEBUG = args.debug
+        AUTO_YES = args.yes
+        print(f"Normalizing to Taiwan-standard glyphs under {start_path}/\n")
+        scanned, changed = normalize_tree_to_taiwan(start_path)
+        print(f"\nScanned {scanned} file(s), rewrote {changed}.")
         sys.exit(0)
 
     # --add-video: add one YouTube video to the current folder's notebook,

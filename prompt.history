@@ -1267,3 +1267,19 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:04 CST
+
+###    User Prompt
+你說得對, 頻道主產生的字幕還是要有排第二的準備,
+但是我們只關心台語漢字學這些頻道, 因為真的有台語古字校正的重點在此
+其餘頻道都不 care. 
+所以只針對台語漢字學的逐字稿來源來斟酌即可
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 縮小範圍：保護只針對台語漢字學系列資料夾；且對這些資料夾而言，連頻道主的官方字幕都排第二，校正版最大
+- Diff: 設計改為 per-folder opt-in marker（.keep_transcripts）：有該檔的資料夾一律停用 text_back_to_video_effort（不管 YouTube 有沒有人工字幕），其餘資料夾行為完全不變。放棄先前『全域以 subtitles vs automatic_captions 判斷』的方案 —— 語意不對（官方字幕在這些頻道也只排第二）且會影響其他 264 個資料夾。第二件待做：--resync-text，把本機校正過的 txt 推回雲端（刪舊來源 → 重 add → 改回 [NNN] 標題 → 同步 tracking）。仍待 sweep（PID 58473/58578）結束才動刀
+
+
+
+

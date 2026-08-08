@@ -1254,3 +1254,16 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:00 CST
+
+###    User Prompt
+如果頻道主已經自己在 youtube 上面附帶字幕, 這個官方字幕具有權威. 但是如果依賴我產生的 whisper 字幕, 此時這個後來產生的字幕不應蓋掉我用台語漢字學產生的校正版. 所以只出現在 whisper 產生的字幕不應蓋掉校正後的
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 定調 text-back-to-video 的取代規則：官方（頻道主上傳）字幕才有權威，ASR 不得蓋掉人工校正版
+- Diff: 判準確定可實作：yt-dlp -J 的 subtitles（人工上傳）vs automatic_captions（YouTube ASR）。實測 WAPFEVBzMas / jH1bkoucF0E 兩者皆 0（所以當初才需要 whisper）；MIT 18.085 Rec1 人工字幕=['en-qlPKC2UN_YU'] 自動=157；3B1B Fourier 人工字幕=['ar','bn','zh','zh-CN'...] 自動=157 —— 對比清楚。待實作規則：text_back_to_video_effort 只在該影片有人工字幕時才嘗試取代，僅 ASR 或查詢失敗一律保留文字來源。因 Joshua 的 --update sweep 正在跑（PID 58473/58578）且腳本是 symlink，暫不動刀，待 sweep 結束再改。另一缺口未補：校正後的 txt 如何推回雲端
+
+
+
+

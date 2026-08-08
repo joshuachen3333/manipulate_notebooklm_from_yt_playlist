@@ -622,3 +622,14 @@ keep asking for login!!! (--update 卡在 auth EXPIRED 迴圈)
 
 
 
+##     2026-08-08 12:21 CST
+
+###    User Prompt
+登入了
+
+###    result
+四步驗證全綠：(1) notebooklm list --json 從 /tmp 正常回傳 notebook 清單；(2) --reauth 無痛高數 正確從 ~/.notebooklm/profiles/default/storage_state.json 讀、寫入 folder 扁平路徑；(3) --update -v 無痛高數 全程跑通（auth → notebook 綁定 → source list → reindex 比對 3/3 native-URL match → tracking 同步），且該 folder 的 .notebooklm/ 已被 0.8.0 自動遷移成 profiles/default/ 佈局；(4) --update 無痛線代 + Algorithmic_Trading_With_Python，後者實際新增上傳一支影片 [100] I Built a Gold RL Trading Bot。三個 folder 跑完後全域 session 仍有效 —— 先前擔心的多 folder cookie 輪替互相撤銷沒有發生。youtube_list 底下共 267 個 index.list / 268 個 .notebooklm，其餘仍是舊扁平佈局，會在各自首次執行時自動遷移。可以放心跑完整 --update。
+
+
+
+

@@ -1241,3 +1241,16 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 16:57 CST
+
+###    User Prompt
+這個陳世明老師的兩個 list, 已經處理完. 但是我要用台語漢字學的基礎知識再校正兩次, 然後把逐字稿更正一下. 這個更正後的 來源 txt, 會被update 給又覆蓋掉嗎？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問：人工校正過的逐字稿 txt 會不會被 --update 覆蓋掉
+- Diff: 查證三件事：(1) 本機 transcripts/<title>.txt 不會被覆蓋 —— whisper_fallback 一看到 txt 存在就 return，跳過下載與轉錄；(2) 雲端那份也不會跟著更新 —— 該 URL 已記在 add_source_video2txt.txt，視為完成而跳過，所以本機校正不會自動同步上去；(3) 真正的殺手是 text_back_to_video_effort（manipulate...py:5185，每次一般上傳／--auto 結束都以 target_urls=None 自動執行），對所有 text 型來源嘗試改用原生 YouTube 匯入，成功就 delete 掉舊的文字來源 —— 校正版會在雲端被換成 YouTube 自動字幕。尚未動工，等 Joshua 澄清需求
+
+
+
+

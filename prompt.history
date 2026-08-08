@@ -1215,3 +1215,16 @@ Setting up notebook...
 
 
 
+##     2026-08-08 13:51 CST
+
+###    User Prompt
+I used to run many sessions of the manipulate,,, --update, why not now?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問：以前可以同時開很多個 --update session，為什麼現在不行
+- Diff: 查明機制：0.3.0 的 storage_state.json 是靜態憑證，N 份副本永遠有效；0.4+ 在每次 fetch token 前都 POST accounts.google.com/RotateCookies 輪替 __Secure-1PSIDTS 並寫回自己那份（notebooklm/_auth/refresh.py:_fetch_tokens_with_jar 的 poke 參數 → _auth/keepalive.py:_poke_session），N 份副本＝N 條分支，Google 只認最後一條。回到並行的兩條路：(A) 環境變數 NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 關掉輪替 POST，零改碼；(B) 全 process 共用一份 storage —— --storage <global> + NOTEBOOKLM_NOTEBOOK=<uuid>（先前已實測可行），0.8.0 的 .storage_state.json.lock / rotate.lock 就是為此設計。待 Joshua 的 job 跑完再實測
+
+
+
+

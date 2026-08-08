@@ -358,9 +358,14 @@ raises the question, so the prompt is the primary lever and opencc is the net.
 
 - **`WHISPER_INITIAL_PROMPT`** is a full Traditional sentence, not the bare
   `繁體中文` this used to send — four characters are too little to steer the
-  decoder. A folder overrides it with a **`.whisper_prompt`** file (used by the
-  台語漢字學 folders). Keep overrides short: whisper caps the prompt at 224
-  tokens and silently eats audio context past that.
+  decoder. It **must stay domain-neutral** — it is what all ~270 folders get,
+  from 台語 lectures to MIT/Harvard maths, and whisper emits prompt vocabulary
+  into low-confidence audio, so a subject word here would surface as
+  hallucinated content in unrelated channels. Subject wording goes in a
+  per-folder **`.whisper_prompt`** (used by the 台語漢字學 folders), and even
+  there it is a tradeoff worth spot-checking after the first re-transcription.
+  Keep overrides short: whisper caps the prompt at 224 tokens and silently eats
+  audio context past that.
 - **Quote the prompt for the remote paths.** `ssh` joins its trailing argv with
   spaces and hands the result to the *remote* shell, which re-splits it — so
   `whisper_via_sshfs` and `whisper_via_ssh` both `shlex.quote()` it even though
@@ -564,6 +569,9 @@ Format: `<index> <url>`
 | `load_local_transcripts(dir)` | Map canonical URL → local txt via the `#URL` header (never by filename) |
 | `whisper_initial_prompt()` | Folder's `.whisper_prompt`, else `WHISPER_INITIAL_PROMPT` |
 | `transcripts_are_protected()` | True when `.keep_transcripts` is present in cwd |
+| `is_text_source(type)` | Text-vs-native check that tolerates `pasted_text` and `text` |
+| `source_fulltext(id)` | `source fulltext` with the CLI's header block stripped |
+| `comparable_text(text)` | Whitespace-normalized form for local-vs-cloud comparison |
 | `run_update(start_path, verbose, debug)` | Traverse dirs, run `--auto` for each playlist folder |
 | `cleanup_mp3_files(start_path)` | Delete audio files where matching txt exists |
 | `find_playlist_folders(start_path)` | Find subdirs containing index.list files |
@@ -698,9 +706,22 @@ notebooklm source rename <source_id> "New Title"
 
 9. **#URL traceability**: Whisper transcripts have `#URL <video_url>` as the first line for URL-based matching in `--reindex`/`--reorder`
 
-10. **`--reindex`/`--reorder` = rename only**: Never delete sources, never re-create. YouTube sources imported natively are precious (notebooklm-py `source add` for YouTube fails frequently). Only use `notebooklm source rename` to update titles.
+10. **Three CLI-output traps — always go through the wrappers** (all three were
+    live bugs found on 2026-08-08, each silently producing "nothing to do"):
 
-11. **Rename immediately after add doesn't stick**: NotebookLM overwrites the
+    | Trap | Wrapper to use |
+    |---|---|
+    | `source list --json` reports text sources as **`pasted_text`**, not `text`. An exact `== "text"` test classifies every whisper upload as a native import. | `is_text_source(s.get("type"))` |
+    | `source fulltext` prints a **`Source:`/`Title:`/`Characters:`/`Content:` header** before the body, so `raw.startswith('#URL ')` is never true. | `source_fulltext(source_id)` |
+    | NotebookLM **double-spaces text on ingest** (98 local lines → 196 cloud lines, measured). A raw or `.strip()`-only compare marks every source as drifted. | `comparable_text(text)` on both sides |
+
+    `source list --json` also returns `{"sources": []}` rather than an error
+    when auth is expired — an empty list is not proof the notebook is empty.
+    Cross-check with plain `notebooklm source list`, which does report the error.
+
+11. **`--reindex`/`--reorder` = rename only**: Never delete sources, never re-create. YouTube sources imported natively are precious (notebooklm-py `source add` for YouTube fails frequently). Only use `notebooklm source rename` to update titles.
+
+12. **Rename immediately after add doesn't stick**: NotebookLM overwrites the
     title when it finishes processing. Always `wait_for_source_with_status()`
     first, then rename — see `add_text_source()`.
 

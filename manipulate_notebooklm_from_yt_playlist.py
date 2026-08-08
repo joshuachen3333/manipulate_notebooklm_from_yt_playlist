@@ -58,9 +58,17 @@ SOURCE_MARKER_EXTRA = "extra"
 # used to send — and output that is Traditional to begin with never hits
 # opencc's one-to-many restoration guesswork (发 → 發/髮, 干 → 乾/幹/干).
 # A folder can override it by dropping a .whisper_prompt file next to index.list.
+#
+# The global default MUST stay domain-neutral — it is what every folder gets,
+# from 台語 lectures to MIT/Harvard maths. It states register and orthography
+# only. Never put subject vocabulary here: whisper emits prompt vocabulary into
+# low-confidence audio, so a topic word in the global prompt would surface as
+# hallucinated content in unrelated channels. Subject wording belongs in a
+# per-folder .whisper_prompt, and even there it is a real tradeoff.
+#
 # Keep any override short: whisper caps the prompt at 224 tokens and silently
 # eats audio context beyond that.
-WHISPER_INITIAL_PROMPT = "以下是臺灣閩南語演講的逐字稿，以臺灣正體中文書寫。"
+WHISPER_INITIAL_PROMPT = "以下是這段影片的逐字稿，以臺灣正體中文書寫。"
 WHISPER_PROMPT_FILE = ".whisper_prompt"
 
 # Marker file: this folder's transcripts have been hand-corrected, so
@@ -829,6 +837,37 @@ def load_video2txt_urls(video2txt_file: Path) -> set[str]:
                 if len(parts) >= 2:
                     urls.add(parts[1])
     return urls
+
+
+def is_text_source(source_type: str | None) -> bool:
+    """True when a notebook source holds uploaded text rather than a native import.
+
+    notebooklm-py 0.8.0 reports these as ``pasted_text``; older versions used a
+    plain ``text``. Substring matching keeps both working. An exact
+    ``== "text"`` comparison — what this code used to do everywhere — silently
+    classifies every whisper upload as a native source, which makes --reindex
+    skip #URL matching, writes whisper rows into add_source_ok.txt instead of
+    add_source_video2txt.txt, and leaves text_back_to_video_effort() with zero
+    candidates.
+    """
+    return "text" in (source_type or "")
+
+
+def source_fulltext(source_id: str) -> tuple[bool, str]:
+    """Fetch a source's body text, with the CLI's header block stripped.
+
+    `notebooklm source fulltext` prints `Source:`, `Title:`, `Characters:`, a
+    blank line, and a literal `Content:` line before the body. Code that tested
+    the raw output with `startswith('#URL ')` therefore never matched a single
+    whisper transcript — which silently disabled both the #URL reindex strategy
+    and text_back_to_video_effort().
+    """
+    ok, raw = run_command(["notebooklm", "source", "fulltext", source_id])
+    if not ok:
+        return False, str(raw)
+    marker = "\nContent:\n"
+    idx = raw.find(marker)
+    return True, raw[idx + len(marker):] if idx != -1 else raw
 
 
 def rename_source(source_id: str, new_title: str) -> bool:
@@ -2826,10 +2865,9 @@ def _match_sources_by_title(sources: list[dict], playlist_url: str | None, new_m
         if source_id in url_from_source_url:
             continue
         # Text sources (whisper uploads) may have #URL as first line
-        if source_type == "text":
+        if is_text_source(source_type):
             text_source_count += 1
-            success, fulltext = run_command(
-                ["notebooklm", "source", "fulltext", source_id])
+            success, fulltext = source_fulltext(source_id)
             if success and fulltext.startswith('#URL '):
                 first_line = fulltext.split('\n', 1)[0]
                 extracted_url = first_line[5:].strip()
@@ -3155,7 +3193,7 @@ def sync_tracking_from_notebook(playlist_url: str | None, index_file: Path,
     with open(ok_file, 'w', encoding='utf-8') as f_ok, \
          open(video2txt_file, 'w', encoding='utf-8') as f_v2t:
         for source_id, _, new_idx, _, url in matched:
-            if source_types.get(source_id) == "text":
+            if is_text_source(source_types.get(source_id)):
                 f_v2t.write(f"{new_idx} {url} 0\n")
                 v2t_count += 1
             else:
@@ -3386,7 +3424,7 @@ def reindex_sources(playlist_url: str | None,
     with open(ok_file, 'w', encoding='utf-8') as f_ok, \
          open(video2txt_file, 'w', encoding='utf-8') as f_v2t:
         for source_id, _, new_idx, _, url in rename_plan:
-            if source_types.get(source_id) == "text":
+            if is_text_source(source_types.get(source_id)):
                 f_v2t.write(f"{new_idx} {url} 0\n")
                 v2t_count += 1
             else:
@@ -3876,13 +3914,12 @@ def text_back_to_video_effort(
     # 2. Find text sources with #URL headers
     candidates = []  # list of (source_id, source_title, youtube_url, index)
     for s in sources:
-        if s.get("type") != "text":
+        if not is_text_source(s.get("type")):
             continue
         source_id = s.get("id")
         source_title = s.get("title", "")
 
-        ft_ok, fulltext = run_command(
-            ["notebooklm", "source", "fulltext", source_id])
+        ft_ok, fulltext = source_fulltext(source_id)
         if not ft_ok or not fulltext.startswith('#URL '):
             continue
 
@@ -4018,6 +4055,20 @@ def load_index_entries_by_url(index_file: Path) -> dict[str, tuple[int, str]]:
     return result
 
 
+def comparable_text(text: str) -> str:
+    """Whitespace-normalized form for comparing a local transcript against its
+    cloud copy.
+
+    NotebookLM's ingestion is not byte-faithful: it double-spaces the body, so
+    a 98-line transcript comes back as 196 lines with 99 blank ones (measured).
+    Comparing raw — or merely `.strip()`-ing the ends — marks every text source
+    as drifted on every run, which would make --resync-text delete and re-add
+    all of them each time. Collapsing blank lines and per-line padding leaves a
+    form where the only surviving differences are real content differences.
+    """
+    return "\n".join(line.strip() for line in text.split("\n") if line.strip())
+
+
 def read_transcript_parts(txt_path: Path) -> tuple[str, str]:
     """Return (full_text, body) for a transcript, body being everything after
     the ``#URL`` header line. Returns ("", "") if unreadable."""
@@ -4090,10 +4141,10 @@ def resync_text_sources(
     candidates = []   # (source_id, title, url, txt_path, index)
     identical = 0
     for s in sources:
-        if s.get("type") != "text":
+        if not is_text_source(s.get("type")):
             continue
         source_id = s.get("id")
-        ft_ok, fulltext = run_command(["notebooklm", "source", "fulltext", source_id])
+        ft_ok, fulltext = source_fulltext(source_id)
         if not ft_ok or not fulltext.startswith('#URL '):
             continue
         url = normalize_youtube_url(fulltext.split('\n', 1)[0][5:].strip())
@@ -4104,9 +4155,9 @@ def resync_text_sources(
             continue
 
         local_full, _ = read_transcript_parts(txt_path)
-        # Strip both sides: the round trip through NotebookLM normalizes
-        # trailing whitespace, and comparing raw would re-upload every run.
-        if local_full.strip() == fulltext.strip():
+        # Whitespace-normalize both sides — NotebookLM double-spaces the body
+        # on ingest, so a raw compare would re-upload everything every run.
+        if comparable_text(local_full) == comparable_text(fulltext):
             identical += 1
             continue
 
@@ -4177,7 +4228,7 @@ def text_over_video(
     candidates = []
     stubs = 0
     for s in sources:
-        if s.get("type") == "text":
+        if is_text_source(s.get("type")):
             continue  # resync_text_sources()'s job, not this one
         source_url = (s.get("url") or "").strip()
         if not source_url:

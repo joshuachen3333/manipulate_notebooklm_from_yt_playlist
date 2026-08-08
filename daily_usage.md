@@ -106,6 +106,11 @@ manipulate_notebooklm_from_yt_playlist --text-over-video
 資料夾已經放了）。寫短一點 —— whisper 的 prompt 上限是 224 tokens，超過會默默
 吃掉音訊上下文。
 
+⚠️ **全域預設那句一定要中性**（「以下是這段影片的逐字稿，以臺灣正體中文書寫。」），
+因為所有 270 個資料夾都吃它 —— 包含 MIT、哈佛、趙啟超線性代數那些。whisper 會把
+prompt 裡的詞彙吐進聽不清楚的段落，所以全域那句放任何學科名詞，都會在不相干的
+頻道變成幻覺內容。學科用語只能放進個別資料夾的 `.whisper_prompt`。
+
 ---
 
 ## 改資料夾／notebook 名稱

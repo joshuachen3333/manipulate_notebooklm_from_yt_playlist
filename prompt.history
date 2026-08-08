@@ -1323,3 +1323,17 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:37 CST
+
+###    User Prompt
+請確認剛剛那些 whisper 提示, "以下是閩南語演講,," 之類的, 不會通用到 數理科學 mit, 哈佛那些頻道去
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 確認 whisper 全域 prompt 不會把閩南語語境套到 MIT/哈佛等頻道
+- Diff: 使用者抓到設計錯誤：WHISPER_INITIAL_PROMPT 原寫成「以下是臺灣閩南語演講的逐字稿」，是全域預設會套到全部 270 個資料夾。改為中性句「以下是這段影片的逐字稿，以臺灣正體中文書寫。」；閩南語語境改放台語漢字學兩個資料夾的 .whisper_prompt，並移除本字/文白異讀/連音等專有名詞（會被 decoder 吐進低信心段落）
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

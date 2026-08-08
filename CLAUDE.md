@@ -6,6 +6,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Batch upload YouTube playlist videos to Google NotebookLM with automatic Simplified → Traditional Chinese (簡體 → 正體中文) conversion.
 
+## Everyday Commands (the two that matter)
+
+```bash
+# 1. Routine update of ALL existing playlists — run from the PARENT directory
+#    that holds every playlist subfolder. Finds each subfolder with an
+#    index.list and runs --auto inside it (subprocess, 1h timeout per folder).
+python3 manipulate_notebooklm_from_yt_playlist.py --update
+python3 manipulate_notebooklm_from_yt_playlist.py --update -v      # stream subprocess output
+python3 manipulate_notebooklm_from_yt_playlist.py --update /path/to/playlists
+
+# 2. A brand-new playlist — run from the PARENT directory; creates the
+#    subfolder, binds/creates the notebook, indexes, uploads, all in one shot.
+python3 manipulate_notebooklm_from_yt_playlist.py --auto "https://www.youtube.com/playlist?list=PLxxx"
+```
+
+Everything else in the Usage block below is a narrower tool for when one of
+these two goes wrong (resume a half-finished folder, rebind a notebook,
+re-order sources, add one-off videos).
+
+### Verification / dry runs
+
+There is no test suite. Only two non-mutating checks exist:
+
+```bash
+python3 -m py_compile manipulate_notebooklm_from_yt_playlist.py             # syntax only
+python3 manipulate_notebooklm_from_yt_playlist.py --list-only "https://..."  # writes index.list only
+```
+
+`--list-only` skips `check_notebook_selected()` entirely and never calls the
+notebooklm CLI — its only side effect is writing `index.list` in cwd.
+
+**Every other flag mutates something durable.** Not just uploads:
+`--setup` / `--auto` / `--bind-notebook` can *create* a cloud notebook, rename an
+existing one, and `os.rename` the folder on disk. `--debug` / `-v` are output
+modifiers, not dry-run switches. There is no `--dry-run`.
+
 ## Main Script: `manipulate_notebooklm_from_yt_playlist.py`
 
 ### Usage
@@ -24,16 +60,13 @@ python3 manipulate_notebooklm_from_yt_playlist.py --reverse-order "https://..."
 python3 manipulate_notebooklm_from_yt_playlist.py --list-only "https://..."
 
 # Reindex: rename notebook sources to match current sorted index.list
-# (matches by title against YouTube playlist)
-python3 manipulate_notebooklm_from_yt_playlist.py --reindex
-
-# Reindex: rename notebook sources to match current sorted index.list
+# (matches by URL / #URL header / title; rename-only, never deletes)
 python3 manipulate_notebooklm_from_yt_playlist.py --reindex
 
 # Resume from where you left off
 python3 manipulate_notebooklm_from_yt_playlist.py -r
 
-# Custom interval between uploads (default: 20s)
+# Custom interval between uploads (default: 1s — DEFAULT_DELAY_SECONDS)
 python3 manipulate_notebooklm_from_yt_playlist.py -i 30 "https://..."
 
 # Disable whisper fallback (just skip failed videos)
@@ -93,6 +126,11 @@ python3 manipulate_notebooklm_from_yt_playlist.py --update /path/to/dir # specif
 python3 manipulate_notebooklm_from_yt_playlist.py --update -v           # verbose output
 python3 manipulate_notebooklm_from_yt_playlist.py --update --debug      # debug output
 
+# Re-auth: push fresh ~/.notebooklm/storage_state.json into every folder's
+# local .notebooklm/. Run after `notebooklm login` when auth expired.
+python3 manipulate_notebooklm_from_yt_playlist.py --reauth              # current dir
+python3 manipulate_notebooklm_from_yt_playlist.py --reauth /path/to/dir
+
 # Cleanup: delete audio files where matching txt exists
 python3 manipulate_notebooklm_from_yt_playlist.py --cleanup             # current dir
 python3 manipulate_notebooklm_from_yt_playlist.py --cleanup /path/to/dir
@@ -138,6 +176,103 @@ python3 manipulate_notebooklm_from_yt_playlist.py -y -r "https://..."
 - `https://youtube.com/watch?v=xxx&list=PLyyy&index=5` → Extracts playlist ID
 - `https://youtube.com/watch?v=xxx` (no list=) → Error, exits
 
+## Architecture
+
+Everything lives in one ~5,100-line script. The parts that need several files to
+understand:
+
+### 1. Three layers of state, one source of truth
+
+| Layer | Files | Role |
+|-------|-------|------|
+| **Truth** | `index.list` | Ordering + titles + notebook binding. Hand-editable; every automated rewrite preserves manual edits. |
+| **Derived** | `add_source_ok.txt`, `add_source_video2txt.txt`, `add_source_skip.txt`, `add_source_working.lock` | Per-folder progress ledgers. Rebuildable — `--reindex` re-syncs them from `index.list` + the cloud notebook. |
+| **Mirror** | The NotebookLM notebook | Reconciled **rename-only**. Never bulk-deleted, because native YouTube imports are expensive and fail often. |
+
+Reconciliation matches a cloud source to an `index.list` row by, in order:
+canonical URL → the `#URL <video_url>` first line of whisper transcripts →
+fuzzy title. See `_match_sources_by_title()` and `reindex_sources()`.
+
+### 2. One folder = one notebook, and the binding is cwd-scoped
+
+Every entry point does the same two-step before touching the CLI:
+`os.chdir(<playlist folder>)`, then
+`os.environ["NOTEBOOKLM_HOME"] = <folder>/.notebooklm`. That's why **every
+command is cwd-sensitive** and why parallel sessions in different folders can
+target different notebooks simultaneously. The binding itself is recorded in
+`index.list` line 2, not in the CLI's global state.
+
+`--update` therefore launches each subprocess with `cwd=<folder>` (not the
+parent), so custom folder names survive repeated runs.
+
+### 3. Managed vs Curated is decided by one empty field
+
+`index.list` line 1 (`# playlist:`). Non-empty → **Managed** (re-scan the
+YouTube playlist on every `--update`). Empty → **Curated** (hand-picked; only
+`--reindex` + tracking sync run, videos arrive one at a time via `--add-video`).
+`--new-notebook` creates Curated; `--attach-playlist` promotes it to Managed
+(one-way, by design).
+
+### 4. `main()` is a flat dispatch of early-exit modes
+
+In order (`main()` starts ~line 4185):
+
+1. `--update` → `--reauth` → `--cleanup` → `--add-video` → `--attach-playlist`
+   → `--new-notebook` — each does its thing and `sys.exit()`s.
+2. `setup_mode = args.setup or args.auto or args.target_notebook` — the shared
+   folder/binding/standardize block; `--setup` exits here, `--auto` continues.
+3. `--reindex` (unless `--auto`) and `--text-back-to-video-effort` (unless
+   `--auto`) — standalone exits.
+4. Fall-through: the main pipeline (index → reindex → upload loop →
+   text-back-to-video). `--list-only` is *not* a dispatch mode — it's a flag
+   inside this pipeline that skips the notebook check and stops after writing
+   `index.list`.
+
+When adding a mode, place it in that chain and remember it must set up
+`NOTEBOOKLM_HOME` itself — the early-exit branches each do their own
+`chdir` + `NOTEBOOKLM_HOME` dance.
+
+### 5. Auth is self-healing at two levels
+
+- `run_command()` sniffs output with `_is_auth_failure()` and, on a hit, calls
+  `refresh_auth()` (copies `~/.notebooklm/storage_state.json` into the folder's
+  `.notebooklm/` if newer) and retries **once**.
+- `--reauth` does that push proactively across every folder in a tree.
+
+Function inventory: `grep -n "^def " manipulate_notebooklm_from_yt_playlist.py`.
+
+## Dual-Account (Christine / Joshua)
+
+Two Google accounts share this tooling; `~/.notebooklm` is a **symlink** that
+`nbswitch <name>` (a `~/.zshrc` function, with `nbwhich` to inspect) atomically
+repoints at `~/.notebooklm-christine` / `~/.notebooklm-joshua`.
+
+Code-facing rules:
+
+- `get_current_account_identity()` resolves, in order: `NOTEBOOKLM_ACCOUNT` env
+  var → a `.account` marker file inside `NOTEBOOKLM_HOME` → the symlink target's
+  name suffix → default `christine`.
+- `notebook_title_prefix()` returns `""` for joshua and `"Joshua_"` for
+  christine (disambiguation inside her notebook list). New notebooks are named
+  `<prefix><playlist_title>`.
+- **Project-local `.notebooklm/` bindings do not follow `nbswitch`.** They are
+  stamped at bind time with a `.account` marker and stay on that identity.
+- Don't run `notebooklm` commands while `nbswitch` is flipping the symlink.
+
+Full operator SOP (backup layout, share flow, risks): `NBLM_DUAL_ACCOUNT_SOP_20260610.md`.
+
+**Storage layout changed in notebooklm-py 0.4+** (upgraded 2026-08-08, 0.3.0 → 0.8.0):
+auth now lives at `<home>/profiles/<profile>/storage_state.json`, not `<home>/storage_state.json`.
+The CLI auto-migrates a legacy flat dir on first use — including each folder's
+`.notebooklm/`. Use `storage_state_path(home)` / `global_storage_state()` in this
+script rather than hardcoding either layout. `nbswitch` / `nbwhich` in `~/.zshrc`
+still switch at the `~/.notebooklm-<name>` level, which is unaffected, but any
+of their internals that reference the old flat path need updating.
+
+**Never copy a `storage_state.json` around while a session is live.** 0.8.0 rotates
+`__Secure-1PSIDTS` on use; replaying a divergent snapshot makes Google revoke the
+whole session and forces a fresh `notebooklm login`.
+
 ## Flow / SOP
 
 ```
@@ -179,6 +314,10 @@ Use `--no-local-fallback` to exit instead of falling back to local whisper.
    - If mp3 exists but no txt → skip to step 3
    - If neither exists → continue to step 2
 2. Download audio with yt-dlp → transcripts/<title>.mp3
+   - Attempts 1-2: --cookies-from-browser chrome (live local cookies)
+   - Attempt 3: --cookies /tmp/youtube_cookies_genesis_shared.txt (scp'd
+     once from cschen@genesis:/genesis/tmp/youtube_cookies_codex.txt;
+     fallback for when local Chrome is closed / cookies expired)
 3. Transcribe with whisper:
    - --language Chinese
    - --initial_prompt 繁體中文
@@ -188,6 +327,16 @@ Use `--no-local-fallback` to exit instead of falling back to local whisper.
 6. Save to transcripts/<title>.txt
 7. Add as text source to NotebookLM
 ```
+
+### Genesis GPU activity probe
+
+For SSHFS/SSH whisper paths, a background daemon thread queries
+`nvidia-smi` on Genesis ~90s after dispatching the whisper job. Prints
+one line per probe:
+- `GPU-PROBE: genesis GPU 98%, 4231 MiB (SSHFS whisper active)` — normal
+- `GPU-PROBE: ⚠ genesis GPU idle (0%, 0 MiB) 90s after SSHFS whisper dispatch — possible silent failure` — sshfs hung / model load failed / etc.
+
+The probe is informational; never blocks whisper.
 
 ### SSHFS Remote Whisper
 
@@ -213,6 +362,15 @@ When using `--remote-sshfs user@host[:path]`:
 Default remote: `cschen@genesis:/genesis/tmp` (enabled by default, use `--no-remote-sshfs` to disable)
 
 **Resume from partial whisper state**: If script exits during whisper (e.g., download succeeded but transcription failed), the next `-r` run will reuse the existing mp3/txt files instead of restarting from scratch.
+
+### genesis whisper environment (as of 2026-05-05)
+
+- `python3.12` + `cu124` torch + RTX 2060 SUPER GPU available; user-site at `/asiaa/home/cschen/.local/lib/python3.12/`
+- `whisper` CLI shebang is `/usr/bin/python3.12` → calling `whisper` directly uses GPU
+- Persistence mode is on; survives reboots via systemd unit `nvidia-persistenced` (fixes a NVRM `mem_desc.c:1353` kernel-space OOM)
+- `whisper_via_ssh` and `whisper_via_sshfs` pass `--device cuda` (model unchanged, defaults to multilingual `turbo`)
+- DO NOT use system `python3` (3.9) or its cu128 nightly torch — broken
+- Verify: `ssh cschen@genesis 'python3.12 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"'` → `True NVIDIA GeForce RTX 2060 SUPER`
 
 ## Auto Mode (`--auto`)
 
@@ -266,14 +424,28 @@ Also runs automatically at the end of every normal upload session.
 
 ## File Formats
 
-**index.list:** (tab-separated, sorted by date by default)
+**index.list:** three header lines + tab-separated 5-column rows.
+**`INDEX_LIST_SPEC.md` is authoritative** — read it before touching any index.list code.
+
 ```
-# playlist: https://youtube.com/playlist?list=PLxxx
-1	https://youtube.com/watch?v=aaa	影片標題一	20141226
-2	https://youtube.com/watch?v=bbb	影片標題二	20150102
-...
+# playlist:		https://youtube.com/playlist?list=PLxxx
+# notebook url:		https://notebooklm.google.com/notebook/<uuid>
+# notebook title:	Joshua_影片系列
+1	https://youtube.com/watch?v=aaa	"影片標題一"<padded to 100>	<pad 7>	20141226
+2	https://youtube.com/watch?v=bbb	"影片標題二"<padded to 100>	extra  	t:1516992468
 ```
-Format: `<index>\t<url>\t<title>\t<sort_date>` (title in Traditional Chinese, sort_date is optional)
+
+Columns: `<index>\t<url>\t"<title>"\t<source>\t<sort_date>`.
+
+- **Line 1 empty ⇒ Curated notebook**; non-empty ⇒ Managed (see Architecture §3).
+- **Line 3 is the user-editable source of truth** for both the cloud notebook
+  title and the on-disk folder name; automated rewrites never clobber it.
+- **Column 1 is parsed as `float`** — edit a row to `0.5` / `-1` and the next
+  `--reindex` sorts by it, then renumbers back to clean integers.
+- **Column 4** `source`: empty = from the playlist, `extra` = added via `--add-video`.
+- Column 5 `sort_date` is historical metadata, **not** the `--reindex` sort key.
+- A short 3-column row (`idx\turl\t"title"`) and legacy 4-column rows are both
+  still parsed; the next rewrite normalizes them.
 
 **add_source_ok.txt / add_source_video2txt.txt:**
 ```
@@ -307,7 +479,8 @@ Format: `<index> <url>`
 | `whisper_fallback(url, title, dir)` | Download audio, transcribe locally (with resume support) |
 | `whisper_via_colab(url, title, dir, colab_url)` | Transcribe via Colab T4 GPU (with resume support) |
 | `whisper_via_sshfs(url, title, dir, mount, user, host, path)` | Transcribe via remote GPU over SSHFS |
-| `do_whisper_transcription(...)` | Wrapper: routes to Colab → SSHFS → local |
+| `whisper_via_ssh(url, title, dir, user, host, path)` | Transcribe via remote GPU over plain SSH (no mount) |
+| `do_whisper_transcription(...)` | Wrapper: routes to Colab → SSHFS → SSH → local |
 | `mount_sshfs(user, host, path, mount_point)` | Mount remote filesystem via SSHFS |
 | `unmount_sshfs(mount_point)` | Unmount SSHFS mount point |
 | `add_text_source(txt, title)` | Add text file to NotebookLM |
@@ -319,6 +492,11 @@ Format: `<index> <url>`
 | `find_playlist_folders(start_path)` | Find subdirs containing index.list files |
 | `claim_index(idx, lock_file)` | Multi-session: atomically claim a video index |
 | `release_index(idx, lock_file)` | Multi-session: release a claimed index |
+| `get_current_account_identity()` | Resolve active account (`joshua` / `christine`) |
+| `standardize_folder_and_notebook(...)` | Enforce index.list line 3 on cloud title + folder name |
+
+(Not exhaustive — `grep -n "^def " manipulate_notebooklm_from_yt_playlist.py`
+lists all ~90.)
 
 ## Dependencies
 
@@ -333,7 +511,7 @@ Also requires:
 
 ```bash
 # 1. Authenticate with Google (opens browser)
-notebooklm auth
+notebooklm login          # (`notebooklm auth` is a different, management-only command group)
 
 # 2. List available notebooks
 notebooklm list
@@ -439,6 +617,24 @@ notebooklm source rename <source_id> "New Title"
 
 10. **`--reindex`/`--reorder` = rename only**: Never delete sources, never re-create. YouTube sources imported natively are precious (notebooklm-py `source add` for YouTube fails frequently). Only use `notebooklm source rename` to update titles.
 
+11. **Rename immediately after add doesn't stick**: NotebookLM overwrites the
+    title when it finishes processing. Always `wait_for_source_with_status()`
+    first, then rename — see `add_text_source()`.
+
+## Companion Docs (all tracked in git)
+
+| File | Read it when |
+|------|--------------|
+| `INDEX_LIST_SPEC.md` | Touching index.list parsing/writing, notebook binding, folder/title standardization, or Curated↔Managed. **Authoritative over this file** on those topics. |
+| `NBLM_DUAL_ACCOUNT_SOP_20260610.md` | Switching Google accounts, `nbswitch`/`nbwhich`, quota exhaustion on one account. |
+| `USING_COLAB_4WHISPER.md` | Setting up the Colab T4 Gradio endpoint for `--colab-url`. |
+
+Untracked `.md` files in the repo root are session scratch — don't treat them as spec.
+
+`prompt.history` / `response.history` (+ their `.backups/` dirs) are provenance
+logs written by the `/ph` and `/logoutput` skills. Append via those skills'
+writer scripts; never hand-edit or truncate.
+
 ## Troubleshooting
 
 **"API returned no data for URL"**: Video has no transcript on YouTube. Whisper fallback will handle it.
@@ -453,7 +649,7 @@ notebooklm source delete <id> --yes
 
 **Colab connection failed**: Ensure Colab notebook is running with `demo.launch(share=True)`. The URL changes each session.
 
-**Colab timeout**: Increase with `--colab-timeout 900` for very long videos. Default is 600s (10 min).
+**Colab timeout**: Default is `0` = no timeout (health-checked every 5s). Set `--colab-timeout 900` if you want a hard cap.
 
 **Colab disconnected mid-transcription**: Local fallback is enabled by default. Use `--no-local-fallback` if you want to exit on Colab failure instead.
 
@@ -466,3 +662,7 @@ ssh user@host "yt-dlp --help"
 ```
 
 **SSHFS/SSH permission denied**: Ensure the remote path is writable. Test with `ssh user@host "touch /genesis/tmp/test && rm /genesis/tmp/test"`.
+
+**Auth expired everywhere / `--update` fails across all folders**: `notebooklm login`, then `--reauth <parent dir>` to push the fresh `storage_state.json` into every folder's local `.notebooklm/`.
+
+**Wrong notebook got touched**: The binding is `index.list` line 2 + the folder's `.notebooklm/`, not a global setting. Check you were in the right cwd; `--bind-notebook <url>` overwrites line 2 unconditionally.

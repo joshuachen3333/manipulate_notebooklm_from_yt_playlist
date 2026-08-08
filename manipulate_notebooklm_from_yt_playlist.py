@@ -66,12 +66,35 @@ def _is_auth_failure(output: str) -> bool:
     return has_error and has_auth
 
 
+def storage_state_path(home: Path) -> Path:
+    """Return the storage_state.json path inside a notebooklm home dir.
+
+    notebooklm-py >= 0.4 keeps auth at <home>/profiles/<profile>/storage_state.json;
+    older versions used a flat <home>/storage_state.json. Prefer whichever exists,
+    and for a brand-new dir write the flat form — the CLI auto-migrates it into the
+    profile layout on first use.
+    """
+    profile = os.environ.get("NOTEBOOKLM_PROFILE", "default")
+    profiled = home / "profiles" / profile / "storage_state.json"
+    if profiled.exists():
+        return profiled
+    flat = home / "storage_state.json"
+    if flat.exists():
+        return flat
+    return profiled if (home / "profiles" / profile).is_dir() else flat
+
+
+def global_storage_state() -> Path:
+    """storage_state.json of the active global (or nbswitch-selected) account."""
+    return storage_state_path(Path.home() / ".notebooklm")
+
+
 def refresh_auth() -> bool:
     """Copy fresh auth from ~/.notebooklm/ to local .notebooklm/ if it exists and is newer.
     Returns True if auth was refreshed."""
     local_dir = Path(os.environ.get("NOTEBOOKLM_HOME", ".notebooklm"))
-    local_auth = local_dir / "storage_state.json"
-    global_auth = Path.home() / ".notebooklm" / "storage_state.json"
+    local_auth = storage_state_path(local_dir)
+    global_auth = global_storage_state()
 
     if not local_dir.exists() or not local_auth.exists():
         return False  # No local config, nothing to refresh
@@ -859,6 +882,65 @@ def extract_notebook_id(value: str) -> str | None:
     return None
 
 
+# ─── Account identity detection (Joshua vs Christine) ────────────────────────
+# Notebook titles get a "Joshua_" prefix when uploading to Christine's account
+# so she can distinguish Joshua's notebooks from her own in NotebookLM's list.
+# Joshua's own account (joysons3) does NOT need this prefix — he IS Joshua.
+#
+# Detection precedence (highest → lowest):
+#   1. NOTEBOOKLM_ACCOUNT env var (explicit override: 'joshua' / 'christine')
+#   2. `.account` marker file inside the active NOTEBOOKLM_HOME
+#   3. NOTEBOOKLM_HOME (or ~/.notebooklm) resolved basename ends with '-joshua'
+#   4. Default 'christine' (preserves the project's prior single-account behavior)
+#
+# Setup flows (auto_setup / bind_existing_folder / --new-notebook) write a
+# `.account` marker into the project-local .notebooklm/ at creation time,
+# detected from the global config BEFORE any local override — so the binding
+# stays correct even after a later nbswitch.
+
+def get_current_account_identity() -> str:
+    """Return 'joshua' or 'christine' for the active NotebookLM auth."""
+    explicit = os.environ.get("NOTEBOOKLM_ACCOUNT", "").strip().lower()
+    if explicit:
+        return explicit
+    home_str = os.environ.get("NOTEBOOKLM_HOME") or str(Path.home() / ".notebooklm")
+    home_path = Path(home_str).expanduser()
+    try:
+        marker = home_path / ".account"
+        if marker.exists():
+            val = marker.read_text(encoding="utf-8").strip().lower()
+            if val:
+                return val
+    except OSError:
+        pass
+    try:
+        resolved = home_path.resolve()
+    except OSError:
+        resolved = home_path
+    if resolved.name.endswith("-joshua") or resolved.name == "joshua":
+        return "joshua"
+    return "christine"
+
+
+def notebook_title_prefix() -> str:
+    """Return the prefix to prepend to a notebook title under the active account.
+    Empty for Joshua (joysons3); 'Joshua_' for Christine (disambiguation in her list)."""
+    return "" if get_current_account_identity() == "joshua" else "Joshua_"
+
+
+def mark_local_notebooklm_account(local_dir: Path, identity: str | None = None) -> None:
+    """Tag a project-local .notebooklm/ dir with `identity` (default: current
+    global identity) via a `.account` marker file. Future runs in this project
+    read the marker first, so the binding survives global symlink switches."""
+    if identity is None:
+        identity = get_current_account_identity()
+    try:
+        (local_dir / ".account").write_text(identity + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"  Warning: could not write .account marker in {local_dir}: {exc}",
+              file=sys.stderr)
+
+
 def find_or_create_notebook(playlist_title: str) -> str:
     """Find an existing notebook matching playlist_title, or create a new one.
     Returns notebook_id. Also runs 'notebooklm use <id>' to select it."""
@@ -893,8 +975,9 @@ def find_or_create_notebook(playlist_title: str) -> str:
                 sys.exit(1)
             return nb_id
 
-    # No match — create new notebook with Joshua_ prefix
-    new_title = f"Joshua_{playlist_title}"
+    # No match — create new notebook with account-aware prefix
+    # (Christine: "Joshua_<title>" for disambiguation; Joshua: just "<title>")
+    new_title = f"{notebook_title_prefix()}{playlist_title}"
     print(f"  Creating notebook: {new_title}")
     success, output = run_command(["notebooklm", "create", new_title, "--json"], capture_json=True)
     if not success:
@@ -921,9 +1004,13 @@ def bind_existing_folder(nb_id: str):
     Ensures .notebooklm/ exists with fresh auth, then runs `notebooklm use <nb_id>`.
     Exits on failure."""
     notebooklm_dir = Path(".notebooklm")
+    # Capture global account identity BEFORE we override NOTEBOOKLM_HOME below,
+    # so the .account marker we write into the project-local dir reflects which
+    # account this binding was actually created with (survives later nbswitch).
+    identity_at_bind = get_current_account_identity()
     notebooklm_dir.mkdir(exist_ok=True)
-    storage_src = Path.home() / ".notebooklm" / "storage_state.json"
-    storage_dst = notebooklm_dir / "storage_state.json"
+    storage_src = global_storage_state()
+    storage_dst = storage_state_path(notebooklm_dir)
     if not storage_dst.exists():
         if not storage_src.exists():
             print(f"Error: Auth file not found: {storage_src}", file=sys.stderr)
@@ -934,6 +1021,8 @@ def bind_existing_folder(nb_id: str):
     elif storage_src.exists() and storage_src.stat().st_mtime > storage_dst.stat().st_mtime:
         shutil.copy2(storage_src, storage_dst)
         print(f"  Auth refreshed from {storage_src}")
+    if not (notebooklm_dir / ".account").exists():
+        mark_local_notebooklm_account(notebooklm_dir, identity_at_bind)
     os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
     success, _ = run_command(["notebooklm", "use", nb_id])
     if not success:
@@ -965,7 +1054,7 @@ def standardize_folder_and_notebook(playlist_title: str,
     meta = read_index_metadata(index_file) if index_file else {
         'notebook_url': None, 'notebook_title': None, 'playlist_url': None
     }
-    default_title = f"Joshua_{playlist_title}"
+    default_title = f"{notebook_title_prefix()}{playlist_title}"
     target_title = meta.get('notebook_title') or default_title
     seeded_default_title = False
     seeded_notebook_url = False
@@ -1127,9 +1216,12 @@ def auto_setup(url: str, notebook_url: str | None = None) -> str:
 
     # 3. Setup .notebooklm/ auth
     notebooklm_dir = Path(".notebooklm")
+    # Capture global identity BEFORE local NOTEBOOKLM_HOME override (so the
+    # .account marker reflects the account in use at setup time).
+    identity_at_setup = get_current_account_identity()
     notebooklm_dir.mkdir(exist_ok=True)
-    storage_src = Path.home() / ".notebooklm" / "storage_state.json"
-    storage_dst = notebooklm_dir / "storage_state.json"
+    storage_src = global_storage_state()
+    storage_dst = storage_state_path(notebooklm_dir)
     if not storage_src.exists():
         if not storage_dst.exists():
             print(f"Error: Auth file not found: {storage_src}", file=sys.stderr)
@@ -1143,6 +1235,8 @@ def auto_setup(url: str, notebook_url: str | None = None) -> str:
         print(f"  Auth refreshed from {storage_src}")
     else:
         print(f"  Auth already exists (up to date)")
+    if not (notebooklm_dir / ".account").exists():
+        mark_local_notebooklm_account(notebooklm_dir, identity_at_setup)
     os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
 
     # 4. Bind to given notebook. Priority:
@@ -1221,7 +1315,8 @@ def new_notebook_setup(name: str | None, seed_url: str | None) -> str:
         print(f"  Derived name: {name}")
 
     # Strip any user-supplied Joshua_ / Joshua / Joshua prefix so we don't
-    # end up with Joshua_Joshua_<name> after we re-prepend below.
+    # end up with Joshua_Joshua_<name> after we re-prepend below (Christine path)
+    # or a stray Joshua_ leaking into the Joshua-account namespace.
     stripped = name
     for prefix in ("Joshua_", "Joshua ", "Joshua"):
         if stripped.startswith(prefix):
@@ -1233,7 +1328,7 @@ def new_notebook_setup(name: str | None, seed_url: str | None) -> str:
               file=sys.stderr)
         sys.exit(1)
 
-    full_title = f"Joshua_{stripped}"
+    full_title = f"{notebook_title_prefix()}{stripped}"
     folder_name = derive_folder_name(full_title)
     if not folder_name:
         print(f"Error: sanitized folder name is empty for {full_title!r}",
@@ -1253,9 +1348,11 @@ def new_notebook_setup(name: str | None, seed_url: str | None) -> str:
 
     # Set up .notebooklm/ auth (same pattern as auto_setup).
     notebooklm_dir = Path(".notebooklm")
+    # Capture global identity BEFORE local NOTEBOOKLM_HOME override.
+    identity_at_setup = get_current_account_identity()
     notebooklm_dir.mkdir(exist_ok=True)
-    storage_src = Path.home() / ".notebooklm" / "storage_state.json"
-    storage_dst = notebooklm_dir / "storage_state.json"
+    storage_src = global_storage_state()
+    storage_dst = storage_state_path(notebooklm_dir)
     if not storage_src.exists():
         if not storage_dst.exists():
             print(f"Error: Auth file not found: {storage_src}", file=sys.stderr)
@@ -1269,6 +1366,8 @@ def new_notebook_setup(name: str | None, seed_url: str | None) -> str:
         print(f"  Auth refreshed from {storage_src}")
     else:
         print(f"  Auth already exists (up to date)")
+    if not (notebooklm_dir / ".account").exists():
+        mark_local_notebooklm_account(notebooklm_dir, identity_at_setup)
     os.environ["NOTEBOOKLM_HOME"] = str(notebooklm_dir.absolute())
 
     # Find or create the cloud notebook with the standardized title.
@@ -1457,6 +1556,122 @@ def format_title_with_index(index: int, title: str) -> str:
     return f"[{index:03d}] {title}"
 
 
+# ----- Genesis shared cookies fallback (Suggestion B from strategy_librarian) -----
+# When yt-dlp fails twice with --cookies-from-browser chrome (Chrome closed,
+# not logged into YouTube, cookies stale), fall back to the static cookies file
+# codex maintains at /genesis/tmp/youtube_cookies_codex.txt. Fetched once per
+# process to /tmp. If Genesis is unreachable or the file is missing, just keep
+# returning None and downloads fail loudly as before.
+
+_GENESIS_COOKIES_LOCAL_CACHE = Path("/tmp/youtube_cookies_genesis_shared.txt")
+_GENESIS_COOKIES_RESULT: Path | None = None
+_GENESIS_COOKIES_TRIED: bool = False
+
+
+def get_genesis_cookies_fallback() -> Path | None:
+    """Fetch /genesis/tmp/youtube_cookies_codex.txt from Genesis to local /tmp.
+
+    Returns the local path, or None if Genesis is unreachable or the file is
+    missing. Result is cached for the lifetime of the process (one scp at most).
+    """
+    global _GENESIS_COOKIES_RESULT, _GENESIS_COOKIES_TRIED
+    if _GENESIS_COOKIES_TRIED:
+        return _GENESIS_COOKIES_RESULT
+    _GENESIS_COOKIES_TRIED = True
+
+    result = subprocess.run(
+        ["scp", "-P", "22",
+         "-o", "ConnectTimeout=10",
+         "-o", "BatchMode=yes",
+         "cschen@genesis:/genesis/tmp/youtube_cookies_codex.txt",
+         str(_GENESIS_COOKIES_LOCAL_CACHE)],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"  COOKIES: Genesis fallback unavailable ({result.stderr.strip() or 'scp failed'})")
+        _GENESIS_COOKIES_RESULT = None
+        return None
+    print(f"  COOKIES: Fetched Genesis shared cookies → {_GENESIS_COOKIES_LOCAL_CACHE}")
+    _GENESIS_COOKIES_RESULT = _GENESIS_COOKIES_LOCAL_CACHE
+    return _GENESIS_COOKIES_LOCAL_CACHE
+
+
+def yt_dlp_cookie_args(attempt: int) -> list[str]:
+    """Pick yt-dlp cookie args for this attempt.
+
+    Attempts 1-2: Chrome live cookies (fresh, normal path).
+    Attempt 3+:   Genesis shared cookies file as fallback (if reachable).
+    """
+    if attempt >= 3:
+        genesis_cookies = get_genesis_cookies_fallback()
+        if genesis_cookies is not None:
+            return ["--cookies", str(genesis_cookies)]
+    return ["--cookies-from-browser", "chrome"]
+
+
+# ----- Genesis GPU activity probe (Suggestion C from strategy_librarian) -----
+# After dispatching a whisper job to Genesis we have no direct way to confirm
+# the GPU is actually working — historically this is where silent failures
+# hide. Spawn a daemon thread that probes nvidia-smi ~90s after dispatch and
+# prints a single line; 0% / 0 MiB after that delay almost always means the
+# remote whisper never actually started (sshfs hung, model load OOM, etc).
+
+def probe_genesis_gpu_in_background(
+    ssh_user: str,
+    ssh_host: str,
+    delay_sec: int = 90,
+    expected_label: str = "whisper",
+) -> None:
+    """Start a daemon thread that probes nvidia-smi on `ssh_user@ssh_host`
+    after `delay_sec` seconds, printing utilization / memory. If both are 0,
+    warn about a possible silent failure. Never blocks; never raises.
+    """
+    import threading
+
+    def _probe():
+        time.sleep(delay_sec)
+        try:
+            result = subprocess.run(
+                ["ssh", "-p", "22",
+                 "-o", "ConnectTimeout=5",
+                 "-o", "BatchMode=yes",
+                 f"{ssh_user}@{ssh_host}",
+                 "nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except Exception as exc:
+            print(f"  GPU-PROBE: probe failed ({exc})")
+            return
+        if result.returncode != 0:
+            err = (result.stderr or "").strip() or "ssh failed"
+            print(f"  GPU-PROBE: could not query {ssh_host} ({err})")
+            return
+        line = (result.stdout or "").strip().splitlines()
+        if not line:
+            print(f"  GPU-PROBE: no output from {ssh_host} nvidia-smi")
+            return
+        parts = [p.strip() for p in line[0].split(",")]
+        if len(parts) < 2:
+            print(f"  GPU-PROBE: unexpected nvidia-smi output on {ssh_host}: {line[0]!r}")
+            return
+        util_pct, mem_mib = parts[0], parts[1]
+        try:
+            util_int = int(util_pct)
+            mem_int = int(mem_mib)
+        except ValueError:
+            print(f"  GPU-PROBE: parse error on {ssh_host}: {line[0]!r}")
+            return
+        if util_int == 0 and mem_int == 0:
+            print(
+                f"  GPU-PROBE: ⚠ {ssh_host} GPU idle ({util_pct}%, {mem_mib} MiB) "
+                f"{delay_sec}s after {expected_label} dispatch — possible silent failure"
+            )
+        else:
+            print(f"  GPU-PROBE: {ssh_host} GPU {util_pct}%, {mem_mib} MiB ({expected_label} active)")
+
+    threading.Thread(target=_probe, daemon=True).start()
+
+
 def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) -> tuple[bool, str]:
     """
     Download audio from YouTube, transcribe with whisper, save both mp3 and txt.
@@ -1504,7 +1719,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
 
     # Download if no audio file found (with retry)
     if actual_mp3 is None:
-        max_download_retries = 2
+        max_download_retries = 3  # Attempt 3 uses Genesis cookies fallback
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  WHISPER: Downloading audio to {mp3_file.name}..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
@@ -1512,7 +1727,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
             try:
                 result = sp.run([
                     "yt-dlp",
-                    "--cookies-from-browser", "chrome",
+                    *yt_dlp_cookie_args(dl_attempt),
                     "--remote-components", "ejs:github",
                     "-x",  # Extract audio
                     "--audio-format", "mp3",
@@ -1661,7 +1876,7 @@ def whisper_via_colab(
 
     # Download if no audio file found (with retry)
     if actual_mp3 is None:
-        max_download_retries = 2
+        max_download_retries = 3  # Attempt 3 uses Genesis cookies fallback
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  COLAB: Downloading audio to {mp3_file.name}..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
@@ -1669,7 +1884,7 @@ def whisper_via_colab(
             try:
                 result = sp.run([
                     "yt-dlp",
-                    "--cookies-from-browser", "chrome",
+                    *yt_dlp_cookie_args(dl_attempt),
                     "--remote-components", "ejs:github",
                     "-x",  # Extract audio
                     "--audio-format", "mp3",
@@ -1917,7 +2132,7 @@ def whisper_via_sshfs(
 
     # Download if no audio file found (with retry)
     if actual_mp3 is None:
-        max_download_retries = 2
+        max_download_retries = 3  # Attempt 3 uses Genesis cookies fallback
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  SSHFS: Downloading audio to remote {remote_mp3.name}..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
@@ -1925,7 +2140,7 @@ def whisper_via_sshfs(
             try:
                 result = sp.run([
                     "yt-dlp",
-                    "--cookies-from-browser", "chrome",
+                    *yt_dlp_cookie_args(dl_attempt),
                     "--remote-components", "ejs:github",
                     "-x",  # Extract audio
                     "--audio-format", "mp3",
@@ -1975,6 +2190,7 @@ def whisper_via_sshfs(
         "ssh", "-p", "22", f"{ssh_user}@{ssh_host}",
         "whisper",
         remote_mp3_path,
+        "--device", "cuda",
         "--language", "Chinese",
         "--output_format", "txt",
         "--output_dir", remote_output_dir,
@@ -1982,6 +2198,10 @@ def whisper_via_sshfs(
         "--initial_prompt", "繁體中文",
         "--condition_on_previous_text", "False"
     ]
+
+    # Probe GPU activity in background — 0% / 0 MiB after 90s means whisper
+    # never actually started on Genesis (silent failure class).
+    probe_genesis_gpu_in_background(ssh_user, ssh_host, expected_label="SSHFS whisper")
 
     result = sp.run(ssh_cmd)  # No capture - output goes directly to terminal
 
@@ -2122,7 +2342,7 @@ def whisper_via_ssh(
 
     # Step 3: Download locally if no mp3 found
     if actual_mp3 is None and not mp3_on_remote:
-        max_download_retries = 2
+        max_download_retries = 3  # Attempt 3 uses Genesis cookies fallback
         for dl_attempt in range(1, max_download_retries + 1):
             print(f"  SSH: Downloading audio locally..." + (f" (attempt {dl_attempt})" if dl_attempt > 1 else ""))
 
@@ -2130,7 +2350,7 @@ def whisper_via_ssh(
             try:
                 result = sp.run([
                     "yt-dlp",
-                    "--cookies-from-browser", "chrome",
+                    *yt_dlp_cookie_args(dl_attempt),
                     "--remote-components", "ejs:github",
                     "-x",
                     "--audio-format", "mp3",
@@ -2189,10 +2409,14 @@ def whisper_via_ssh(
     # Step 5: Run whisper on remote via SSH
     ssh_start = time.time()
 
-    # Kill any existing whisper processes to free GPU memory (with retry)
+    # Kill stale whisper processes spawned by THIS script's own remote_path,
+    # to free GPU memory. Scoped to remote_path so we don't disturb unrelated
+    # whisper workloads on the same host (e.g. other users' or other tools'
+    # jobs that operate out of /tmp or elsewhere).
+    pkill_pattern = f"whisper {remote_path}/"
     for attempt in range(1, 4):
         kill_result = sp.run(
-            ["ssh", "-p", "22", f"{ssh_user}@{ssh_host}", "pkill -f '/usr/local/bin/whisper' 2>/dev/null; sleep 1"],
+            ["ssh", "-p", "22", f"{ssh_user}@{ssh_host}", f"pkill -f '{pkill_pattern}' 2>/dev/null; sleep 1"],
             capture_output=True
         )
         if kill_result.returncode == 0 or kill_result.returncode == 1:  # 1 = no process found (ok)
@@ -2201,8 +2425,10 @@ def whisper_via_ssh(
             time.sleep(5)
 
     # Use bash -l to load user's PATH (whisper may be in ~/.local/bin or /usr/local/bin)
+    # whisper CLI shebang on genesis points to /usr/bin/python3.12 (cu124 torch + GPU)
     whisper_cmd = (
         f"bash -l -c \"whisper '{remote_mp3}' "
+        f"--device cuda "
         f"--language Chinese "
         f"--output_format txt "
         f"--output_dir '{remote_path}' "
@@ -2215,6 +2441,10 @@ def whisper_via_ssh(
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         print(f"  SSH: Transcribing on {ssh_host}..." + (f" (attempt {attempt})" if attempt > 1 else ""))
+        # Probe GPU activity in background on first attempt — 0% / 0 MiB after 90s
+        # means whisper never actually started on Genesis (silent failure class).
+        if attempt == 1:
+            probe_genesis_gpu_in_background(ssh_user, ssh_host, expected_label="SSH whisper")
         whisper_result = sp.run(
             ["ssh", "-p", "22", "-t", f"{ssh_user}@{ssh_host}", whisper_cmd]
         )  # No capture - streams to terminal
@@ -3162,7 +3392,7 @@ def find_playlist_folders(start_path: Path) -> list[tuple[Path, str | None]]:
 
 def run_reauth(start_paths: list[Path]) -> None:
     """Copy fresh auth from ~/.notebooklm/ to all local .notebooklm/ dirs under start_paths."""
-    global_auth = Path.home() / ".notebooklm" / "storage_state.json"
+    global_auth = global_storage_state()
     if not global_auth.exists():
         print(f"Error: Global auth file not found: {global_auth}", file=sys.stderr)
         print("Run 'notebooklm login' first to authenticate.", file=sys.stderr)
@@ -3175,7 +3405,8 @@ def run_reauth(start_paths: list[Path]) -> None:
             dirnames[:] = [d for d in dirnames if d != 'transcripts']
             notebooklm_dir = Path(dirpath) / ".notebooklm"
             if notebooklm_dir.is_dir():
-                dst = notebooklm_dir / "storage_state.json"
+                dst = storage_state_path(notebooklm_dir)
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(global_auth, dst)
                 count += 1
 
@@ -3235,7 +3466,7 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
 
         if not auth_ok:
             # Local auth is stale — check if global auth works
-            global_auth = Path.home() / ".notebooklm" / "storage_state.json"
+            global_auth = global_storage_state()
             if global_auth.exists() and check_auth_valid():
                 # Global is good, auto-refresh all local copies
                 print("local copies stale, refreshing...")

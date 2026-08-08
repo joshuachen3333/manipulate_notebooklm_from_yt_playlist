@@ -1060,3 +1060,16 @@ I want to switch to christine and login the expired token, how to do that?
 
 
 
+##     2026-08-08 11:10 CST
+
+###    User Prompt
+manipulate_notebooklm_from_yt_playlist --update -v → Checking NotebookLM auth... EXPIRED → notebooklm login → 重跑仍 EXPIRED，反覆多次。keep asking for login!!!
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 回報 --update 卡在 auth EXPIRED 迴圈：notebooklm login 重登多次仍 EXPIRED
+- Diff: 待查。線索：login 結束時 URL 是 notebook.google.com（非 notebooklm.google.com），且 --update --reauth 併用時 main() 先命中 --update 分支、--reauth 被忽略
+
+
+
+

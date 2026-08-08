@@ -611,3 +611,14 @@ CLAUDE.md 我沒有 commit（你 working tree 還有未完成的腳本改動）�
 
 
 
+##     2026-08-08 12:02 CST
+
+###    User Prompt
+keep asking for login!!! (--update 卡在 auth EXPIRED 迴圈)
+
+###    result
+根因：notebooklm-py 0.3.0 太舊。Google 已把 NotebookLM 搬到 notebook.google.com，0.3.0 的 ALLOWED_COOKIE_DOMAINS 只放行 .google.com / notebooklm.google.com / .googleusercontent.com，把新網域與 accounts.google.com 的 cookie 濾掉 → GET notebooklm.google.com 一路 302 到 accounts signin → CLI 判定 EXPIRED。三路 httpx 探測證實：0.3.0 濾法 FAIL、加 accounts.google.com OK、加 notebook.google.com OK。已 pip 升級 0.3.0 → 0.8.0（隔離 venv 用同一份 storage_state.json 測試曾成功列出 notebook 清單）。副作用（我造成）：0.8.0 首次執行自動把 ~/.notebooklm/{storage_state.json,context.json,browser_profile} 遷移到 ~/.notebooklm-christine/profiles/default/；我在遷移後 cp 了一份輪替中的 cookie 檔，觸發 Google __Secure-1PSIDTS anti-replay，整個 session 被撤銷 → 需要重跑一次 notebooklm login。腳本已改：新增 storage_state_path(home) / global_storage_state() 兩個 profile-aware helper，取代 11 處硬編路徑（refresh_auth / bind_existing_folder / auto_setup / new_notebook_setup / run_reauth / run_update），py_compile 通過並實測三種 layout 解析正確。CLAUDE.md 補記 storage layout 變更與「session 存活期間不要複製 storage_state.json」警告，並修正先前 notebooklm auth 的說法（0.8.0 有 auth 這個管理命令群）。
+
+
+
+

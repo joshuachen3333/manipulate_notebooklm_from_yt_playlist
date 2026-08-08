@@ -600,3 +600,14 @@ CLAUDE.md 我沒有 commit（你 working tree 還有未完成的腳本改動）�
 
 
 
+##     2026-08-08 09:39 CST
+
+###    User Prompt
+(自我覆核後修正)
+
+###    result
+覆核後改掉兩處：(1) Verification 段原本把 --setup / --debug 列為「可用的檢查」是錯的 —— --setup 會 notebooklm create 建雲端 notebook、rename 雲端標題、os.rename 本機資料夾，是三重不可逆變更；已改成只留 py_compile + --list-only，並註明 --list-only 完全不呼叫 notebooklm CLI（跳過 check_notebook_selected），且明講沒有 --dry-run。(2) Architecture §4 的 dispatch 清單原本靠 --help 推測；實測 main() 後確認正確順序為 --update → --reauth → --cleanup → --add-video → --attach-playlist → --new-notebook → setup_mode(--setup/--auto/--bind-notebook) → --reindex/--text-back-to-video(非 --auto 時) → 主流程，且 --list-only 根本不是 dispatch mode 而是主流程內的旗標。另查證 notebooklm --help 確認確實只有 login 沒有 auth；~/.notebooklm 目前確為 symlink → ~/.notebooklm-christine，joshua 側目錄也已存在，Dual-Account 段描述屬實。CLAUDE.md 最終 +202/-14。
+
+
+
+

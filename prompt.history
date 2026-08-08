@@ -1283,3 +1283,16 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:10 CST
+
+###    User Prompt
+現在在跑的, 有匡正為正體中文嗎？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問正在跑的這批有沒有匡正為正體中文
+- Diff: 實測 16 份 whisper 逐字稿：簡體殘留幾乎為 0（唯一被標出的「念」是 opencc 念/唸 變體的誤報，本來就是正體）；index.list 標題也都是正體。但查出一個對校正計畫有影響的事實：原生 YouTube 直傳的來源正文由 NotebookLM 自己去 YouTube 抓，全程不經過腳本，無法匡正也無法校正。台語漢字學短篇 11 筆全是直傳（v2t=0），且本機那 6 份 txt 對應的 URL 全都在 add_source_ok.txt 裡 —— 代表雲端那份根本不是這些 txt，校正本機檔對這 11 支無效。若要讓校正版進雲端，需要反方向的『用文字來源取代原生來源』模式，而非 --resync-text
+
+
+
+

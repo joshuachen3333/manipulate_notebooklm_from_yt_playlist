@@ -3519,6 +3519,7 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
     stream_output = verbose or debug
     # Mid-sweep auth recovery budget (see the retry block in the loop below).
     reauth_retries = 0
+    consecutive_auth_failures = 0
 
     for i, (folder_path, playlist_url) in enumerate(folders, 1):
         # Find the matching start_path for this folder to compute relative path
@@ -3615,6 +3616,29 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
                 errors += 1
                 continue
             output, returncode = run_result
+
+        # Abort the whole sweep once the global auth itself is dead. Without
+        # this, a revoked session grinds through every remaining folder,
+        # failing each in ~2s and burying the real cause hundreds of lines up.
+        if returncode != 0 and _is_auth_failure(output):
+            consecutive_auth_failures += 1
+            if consecutive_auth_failures >= 3:
+                saved_home = os.environ.pop("NOTEBOOKLM_HOME", None)
+                global_ok = check_auth_valid()
+                if saved_home is not None:
+                    os.environ["NOTEBOOKLM_HOME"] = saved_home
+                if not global_ok:
+                    errors += 1
+                    print(f"\nAborting sweep at [{i}/{total}]: the global NotebookLM "
+                          f"session has been revoked — every remaining folder would "
+                          f"fail the same way.", file=sys.stderr)
+                    print("Run 'notebooklm login', then re-run --update "
+                          "(finished folders are skipped, so nothing is redone).",
+                          file=sys.stderr)
+                    break
+                consecutive_auth_failures = 0
+        else:
+            consecutive_auth_failures = 0
 
         # Folder may have been renamed inside the subprocess (when the user
         # changed line 3 of index.list). Rediscover the live path before

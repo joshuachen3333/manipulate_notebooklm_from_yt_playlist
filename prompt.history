@@ -1309,3 +1309,17 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:20 CST
+
+###    User Prompt
+我暫停了, go all of them
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 使用者暫停 job，授權一次做完四項待辦
+- Diff: 解除編輯封鎖：開始實作 .keep_transcripts / --resync-text / --text-over-video / whisper 正體輸出（強化 initial_prompt + s2t→s2tw + .whisper_prompt）
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

@@ -66,7 +66,45 @@ manipulate_notebooklm_from_yt_playlist --list-only "<playlist_url>"
 
 # 清掉已經有 txt 的音檔，省磁碟
 manipulate_notebooklm_from_yt_playlist --cleanup /Users/joshua/work/youtube_list
+
+# 把本機逐字稿改成臺灣標準字形（裏→裡、着→著）。純本機，不碰雲端
+manipulate_notebooklm_from_yt_playlist --normalize-tw /path/to/dir
 ```
+
+---
+
+## 保護手校過的逐字稿（台語漢字學）
+
+預設流程對手校版是**有敵意的**：每次上傳結束都會跑 text-back-to-video，
+把文字來源換成 YouTube 原生匯入 —— 而原生字幕是 ASR 產的，會直接蓋掉校正成果。
+
+在該資料夾放一個空的 `.keep_transcripts` 就整個關掉：
+
+```bash
+cd <資料夾> && touch .keep_transcripts
+```
+
+要取消保護就把檔案刪掉，沒有覆寫旗標（刻意的）。
+
+這個標記只擋「雲端蓋掉本機」。**把校正推上去是另外兩個指令，永遠要手動下**
+（`--auto` / `--update` 碰不到它們，270 個資料夾的 sweep 絕不該動雲端來源）：
+
+```bash
+cd <資料夾>
+
+# 雲端是文字來源、但內容已經和本機 txt 不一樣 → 推上去
+manipulate_notebooklm_from_yt_playlist --resync-text
+
+# 雲端是 YouTube 原生來源 → 用本機校正版取代它
+manipulate_notebooklm_from_yt_playlist --text-over-video
+```
+
+兩者都只動「本機有對應 `#URL` 逐字稿」的項目；`--text-over-video` 另外會把
+內文不到 200 字的檔案當成只有標題的殘檔擋下來，不會拿它去覆蓋能用的來源。
+
+**每支影片的轉錄引導句**可以用 `.whisper_prompt` 逐資料夾覆寫（台語漢字學兩個
+資料夾已經放了）。寫短一點 —— whisper 的 prompt 上限是 224 tokens，超過會默默
+吃掉音訊上下文。
 
 ---
 
@@ -115,8 +153,13 @@ notebook，兩邊的 `index.list` 互相覆寫。標題只差異體字的兩條 
 **雙帳號**：`nbswitch christine` / `nbswitch joshua` 切全域帳號，`nbwhich` 看現況。
 **已經綁定的資料夾不會跟著切** —— 綁定時就用 `.account` 標記釘住身份了。
 
-**台語／方言內容**：whisper fallback 走 `--language Chinese` + `繁體中文` initial
-prompt，沒有 YouTube 原生字幕的影片轉出來品質可能不理想，跑完值得抽幾支看一下。
+**台語／方言內容**：whisper fallback 走 `--language Chinese` + 一整句正體中文的
+initial prompt（可用 `.whisper_prompt` 逐資料夾覆寫）。沒有 YouTube 原生字幕的
+影片轉出來品質可能不理想，跑完值得抽幾支看一下。
+
+**Colab 路徑沒有 prompt 控制。** Gradio 端點只吃一個音訊參數，所以 `--colab-url`
+轉出來的稿子完全靠 opencc 事後轉換 —— 而 opencc 對「一簡對多繁」（发→發/髮、
+干→乾/幹/干）是用詞頻**猜**的，猜錯事後看不出來。在意字形就走 genesis。
 
 ---
 

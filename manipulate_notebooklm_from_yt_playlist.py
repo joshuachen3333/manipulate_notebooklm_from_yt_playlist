@@ -28,6 +28,7 @@ import argparse
 import shutil
 import os
 import math
+import shlex
 import unicodedata
 from urllib.parse import urlparse, parse_qs
 from difflib import SequenceMatcher
@@ -51,6 +52,25 @@ INDEX_TITLE_WIDTH = 100
 INDEX_SOURCE_WIDTH = 7
 # Source-marker value for rows added via --add-video (i.e. not from the source playlist).
 SOURCE_MARKER_EXTRA = "extra"
+
+# Whisper decoding guidance. A full Traditional-Chinese sentence steers the
+# decoder toward Traditional output far better than the bare "繁體中文" this
+# used to send — and output that is Traditional to begin with never hits
+# opencc's one-to-many restoration guesswork (发 → 發/髮, 干 → 乾/幹/干).
+# A folder can override it by dropping a .whisper_prompt file next to index.list.
+# Keep any override short: whisper caps the prompt at 224 tokens and silently
+# eats audio context beyond that.
+WHISPER_INITIAL_PROMPT = "以下是臺灣閩南語演講的逐字稿，以臺灣正體中文書寫。"
+WHISPER_PROMPT_FILE = ".whisper_prompt"
+
+# Marker file: this folder's transcripts have been hand-corrected, so
+# text_back_to_video_effort() must not swap them out for native YouTube
+# imports (whose ASR captions would silently undo the corrections).
+KEEP_TRANSCRIPTS_MARKER = ".keep_transcripts"
+
+# Minimum body length (chars, excluding the #URL header) for a local transcript
+# to be considered a real transcript rather than a title-only stub.
+MIN_TRANSCRIPT_BODY_CHARS = 200
 
 # Auth failure patterns (case-insensitive match against stderr/stdout)
 AUTH_FAIL_PATTERNS = [
@@ -413,18 +433,28 @@ def record_skip_url(index: int, url: str, skip_file: Path):
         f.write(f"{index} {url}\n")
 
 
-def remove_video2txt_entry(url: str, video2txt_file: Path):
-    """Remove a URL entry from the video2txt tracking file (text→YouTube transition)."""
-    if not video2txt_file.exists():
+def remove_tracking_entry(url: str, tracking_file: Path):
+    """Remove a URL's row from a `<index> <url> <elapsed>` tracking file.
+
+    Matches canonically, so a youtu.be / shorts / watch?v= variant recorded
+    earlier still gets removed.
+    """
+    if not tracking_file.exists():
         return
-    with open(video2txt_file, 'r', encoding='utf-8') as f:
+    canonical = normalize_youtube_url(url)
+    with open(tracking_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    with open(video2txt_file, 'w', encoding='utf-8') as f:
+    with open(tracking_file, 'w', encoding='utf-8') as f:
         for line in lines:
             parts = line.strip().split()
-            if len(parts) >= 2 and parts[1] == url:
+            if len(parts) >= 2 and normalize_youtube_url(parts[1]) == canonical:
                 continue
             f.write(line)
+
+
+def remove_video2txt_entry(url: str, video2txt_file: Path):
+    """Remove a URL entry from the video2txt tracking file (text→YouTube transition)."""
+    remove_tracking_entry(url, video2txt_file)
 
 
 def record_success_url(index: int, url: str, elapsed_seconds: int, ok_file: Path):
@@ -807,10 +837,52 @@ def rename_source(source_id: str, new_title: str) -> bool:
     return success
 
 
-def convert_to_traditional(text: str) -> str:
-    """Convert Simplified Chinese to Traditional Chinese."""
-    converter = opencc.OpenCC('s2t')
+def convert_to_traditional(text: str, taiwan: bool = False) -> str:
+    """Convert Simplified Chinese to Traditional Chinese.
+
+    The default (`s2t`) is the general Traditional set. Every existing folder
+    name and cloud notebook title was produced with it, so it stays the default
+    — switching it would make the next --update rename folders on disk and
+    notebooks in the cloud (measured: 1 of 270 folder names would move).
+
+    `taiwan=True` uses `s2tw`, which picks Taiwan-standard glyphs (裡/著 rather
+    than 裏/着). Used for transcript bodies, where the glyph choice *is* the
+    content — especially for the 台語漢字學 material.
+    """
+    converter = opencc.OpenCC('s2tw' if taiwan else 's2t')
     return converter.convert(text)
+
+
+def normalize_to_taiwan(text: str) -> str:
+    """Normalize already-Traditional text to Taiwan-standard glyphs (裏→裡, 着→著).
+
+    `t2tw(s2t(x)) == s2tw(x)`, so this retrofits transcripts that were written
+    before `taiwan=True` existed without re-running whisper.
+    """
+    return opencc.OpenCC('t2tw').convert(text)
+
+
+def whisper_initial_prompt() -> str:
+    """Return the whisper --initial_prompt for the current folder.
+
+    A folder-local `.whisper_prompt` wins over the global default, so the
+    台語漢字學 folders can carry domain-specific guidance without changing the
+    other ~265 folders.
+    """
+    prompt_file = Path(WHISPER_PROMPT_FILE)
+    if prompt_file.is_file():
+        try:
+            custom = prompt_file.read_text(encoding='utf-8').strip()
+        except OSError:
+            custom = ""
+        if custom:
+            return custom
+    return WHISPER_INITIAL_PROMPT
+
+
+def transcripts_are_protected() -> bool:
+    """True when this folder carries the .keep_transcripts marker."""
+    return Path(KEEP_TRANSCRIPTS_MARKER).is_file()
 
 
 def get_playlist_title(playlist_url: str) -> str:
@@ -1800,7 +1872,8 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
             "--output_format", "txt",
             "--output_dir", str(transcripts_dir),
             "--verbose", "True",
-            "--initial_prompt", "繁體中文",
+            # Local run: sp.run list form, no shell involved — no quoting needed.
+            "--initial_prompt", whisper_initial_prompt(),
             "--condition_on_previous_text", "False"
         ]
     )  # No capture - output goes directly to terminal
@@ -1819,7 +1892,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
     with open(whisper_txt, 'r', encoding='utf-8') as f:
         transcript = f.read()
 
-    traditional_transcript = convert_to_traditional(transcript)
+    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
 
     # Overwrite with Traditional Chinese version
     with open(whisper_txt, 'w', encoding='utf-8') as f:
@@ -2062,8 +2135,10 @@ def whisper_via_colab(
         print(f"  COLAB: Empty transcript returned")
         return False, "Empty transcript"
 
-    # Convert to Traditional Chinese (Colab may return Simplified)
-    traditional_transcript = convert_to_traditional(transcript)
+    # Convert to Traditional Chinese (Colab may return Simplified).
+    # The Colab endpoint takes a single audio input (fn_index=0) with no prompt
+    # lever, so this path relies on opencc entirely.
+    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
 
     # Save to txt file
     with open(txt_file, 'w', encoding='utf-8') as f:
@@ -2219,7 +2294,10 @@ def whisper_via_sshfs(
         "--output_format", "txt",
         "--output_dir", remote_output_dir,
         "--verbose", "True",
-        "--initial_prompt", "繁體中文",
+        # ssh joins its trailing argv with spaces and hands the result to the
+        # REMOTE shell, which re-splits it — so a multi-word prompt has to be
+        # quoted even though this is a list-form sp.run.
+        "--initial_prompt", shlex.quote(whisper_initial_prompt()),
         "--condition_on_previous_text", "False"
     ]
 
@@ -2243,7 +2321,7 @@ def whisper_via_sshfs(
     with open(expected_txt, 'r', encoding='utf-8') as f:
         transcript = f.read()
 
-    traditional_transcript = convert_to_traditional(transcript)
+    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
 
     # Save to local transcripts directory
     transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -2457,7 +2535,9 @@ def whisper_via_ssh(
         f"--output_format txt "
         f"--output_dir '{remote_path}' "
         f"--verbose True "
-        f"--initial_prompt 繁體中文 "
+        # Same remote-shell re-split as whisper_via_sshfs; shlex.quote's single
+        # quotes survive the surrounding double quotes and the bash -l -c reparse.
+        f"--initial_prompt {shlex.quote(whisper_initial_prompt())} "
         f"--condition_on_previous_text False\""
     )
 
@@ -2503,7 +2583,7 @@ def whisper_via_ssh(
     # Convert to Traditional Chinese
     with open(local_txt, 'r', encoding='utf-8') as f:
         transcript = f.read()
-    traditional_transcript = convert_to_traditional(transcript)
+    traditional_transcript = convert_to_traditional(transcript, taiwan=True)
     with open(local_txt, 'w', encoding='utf-8') as f:
         f.write(traditional_transcript)
 
@@ -3773,6 +3853,15 @@ def text_back_to_video_effort(
     Returns:
         (attempted, succeeded, failed) counts.
     """
+    # Folders whose transcripts were hand-corrected opt out entirely. Checked
+    # before the source list so a protected folder makes zero cloud calls —
+    # this is the single choke point for both the --auto tail and the
+    # standalone --text-back-to-video-effort dispatch.
+    if transcripts_are_protected():
+        print(f"Skipping: {KEEP_TRANSCRIPTS_MARKER} present "
+              "(hand-corrected transcripts are protected).")
+        return 0, 0, 0
+
     # 1. List all sources
     success, output = run_command(
         ["notebooklm", "source", "list", "--json"],
@@ -3887,6 +3976,293 @@ def text_back_to_video_effort(
         time.sleep(delay_seconds)
 
     return attempted, succeeded, failed
+
+
+def load_local_transcripts(transcripts_dir: Path) -> dict[str, Path]:
+    """Map canonical YouTube URL -> local transcript path.
+
+    Keyed off the ``#URL <video_url>`` header every transcript carries as its
+    first line, never off the filename: the on-disk name comes from a sanitized
+    title that moves whenever the video is retitled, while the header is
+    written once and never rewritten.
+    """
+    mapping: dict[str, Path] = {}
+    if not transcripts_dir.is_dir():
+        return mapping
+    for txt in sorted(transcripts_dir.glob("*.txt")):
+        try:
+            with open(txt, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+        except OSError:
+            continue
+        if not first_line.startswith('#URL '):
+            continue
+        url = first_line[5:].strip()
+        if url:
+            mapping[normalize_youtube_url(url)] = txt
+    return mapping
+
+
+def load_index_entries_by_url(index_file: Path) -> dict[str, tuple[int, str]]:
+    """Map canonical URL -> (index, title) from index.list."""
+    result: dict[str, tuple[int, str]] = {}
+    if not index_file.exists():
+        return result
+    with open(index_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            entry = parse_index_entry_line(line)
+            if not entry:
+                continue
+            result[normalize_youtube_url(entry['url'])] = (
+                int(entry['idx']), entry['title'])
+    return result
+
+
+def read_transcript_parts(txt_path: Path) -> tuple[str, str]:
+    """Return (full_text, body) for a transcript, body being everything after
+    the ``#URL`` header line. Returns ("", "") if unreadable."""
+    try:
+        full = txt_path.read_text(encoding='utf-8')
+    except OSError:
+        return "", ""
+    if full.startswith('#URL '):
+        body = full.split('\n', 1)[1] if '\n' in full else ""
+    else:
+        body = full
+    return full, body
+
+
+def _swap_in_local_text(old_source_id: str, txt_path: Path, title: str) -> bool:
+    """Replace one cloud source with a local transcript file.
+
+    Add-then-verify-then-delete, mirroring text_back_to_video_effort(): the new
+    source is fully processed and renamed before the old one is removed, so a
+    failure anywhere leaves the notebook with the old source still intact.
+    """
+    print("  Adding local transcript...", end=" ", flush=True)
+    ok, result = add_text_source(str(txt_path), title)
+    if not ok:
+        print(f"FAILED: {result}")
+        cleanup_error_sources(silent=True)
+        print("  Keeping existing source (unchanged)")
+        return False
+    print(f"OK (id: {result[:8]}...)")
+
+    print("  Deleting old source...", end=" ", flush=True)
+    if delete_source(old_source_id):
+        print("OK")
+    else:
+        # Deliberately not retried: a duplicate the user can see and delete
+        # beats a silent loop against a source that may already be gone.
+        print("FAILED (new source added — old one is still there, delete it by hand)")
+    return True
+
+
+def resync_text_sources(
+    target_urls: set[str] | None,
+    index_file: Path,
+    transcripts_dir: Path,
+    delay_seconds: int = 1,
+) -> tuple[int, int, int]:
+    """Push locally corrected transcripts back into the notebook.
+
+    For every text source whose cloud content no longer matches the local
+    ``transcripts/*.txt``, replace it with the local file. This is the other
+    half of .keep_transcripts: the marker stops the cloud from overwriting your
+    corrections, this pushes the corrections up.
+
+    Returns (attempted, succeeded, skipped_identical).
+    """
+    local_map = load_local_transcripts(transcripts_dir)
+    if not local_map:
+        print(f"No local transcripts with a #URL header under {transcripts_dir}/.")
+        return 0, 0, 0
+
+    index_map = load_index_entries_by_url(index_file)
+
+    success, output = run_command(
+        ["notebooklm", "source", "list", "--json"], capture_json=True)
+    if not success:
+        print(f"Error: Failed to list sources: {output}", file=sys.stderr)
+        return 0, 0, 0
+    sources = output.get("sources", [])
+
+    candidates = []   # (source_id, title, url, txt_path, index)
+    identical = 0
+    for s in sources:
+        if s.get("type") != "text":
+            continue
+        source_id = s.get("id")
+        ft_ok, fulltext = run_command(["notebooklm", "source", "fulltext", source_id])
+        if not ft_ok or not fulltext.startswith('#URL '):
+            continue
+        url = normalize_youtube_url(fulltext.split('\n', 1)[0][5:].strip())
+        if target_urls is not None and url not in target_urls:
+            continue
+        txt_path = local_map.get(url)
+        if txt_path is None:
+            continue
+
+        local_full, _ = read_transcript_parts(txt_path)
+        # Strip both sides: the round trip through NotebookLM normalizes
+        # trailing whitespace, and comparing raw would re-upload every run.
+        if local_full.strip() == fulltext.strip():
+            identical += 1
+            continue
+
+        idx, idx_title = index_map.get(url, (0, s.get("title", "")))
+        candidates.append((source_id, s.get("title", ""), url, txt_path, idx, idx_title))
+
+    if identical:
+        print(f"Already in sync: {identical} text source(s).")
+    if not candidates:
+        print("Nothing to resync.")
+        return 0, 0, identical
+
+    print(f"\n{len(candidates)} text source(s) differ from the local transcript:")
+    for _, cloud_title, _, txt_path, idx, _ in candidates:
+        print(f"  #{idx}: {cloud_title[:50]}  ←  {txt_path.name}")
+
+    if not AUTO_YES:
+        answer = input(f"\nReplace {len(candidates)} cloud source(s) with the local file(s)? [y/N] ").strip().lower()
+        if answer != 'y':
+            print("Aborted.")
+            return 0, 0, identical
+    else:
+        print()
+
+    attempted = len(candidates)
+    succeeded = 0
+    for i, (source_id, cloud_title, url, txt_path, idx, idx_title) in enumerate(candidates, 1):
+        title = format_title_with_index(idx, idx_title) if idx else cloud_title
+        print(f"  [{i}/{attempted}] #{idx}: {title[:60]}")
+        if _swap_in_local_text(source_id, txt_path, title):
+            succeeded += 1
+        time.sleep(delay_seconds)
+
+    return attempted, succeeded, identical
+
+
+def text_over_video(
+    target_urls: set[str] | None,
+    index_file: Path,
+    transcripts_dir: Path,
+    ok_file: Path,
+    video2txt_file: Path,
+    delay_seconds: int = 1,
+) -> tuple[int, int, int]:
+    """Replace native YouTube sources with the local corrected transcript.
+
+    The inverse of text_back_to_video_effort(), for folders where the local txt
+    is authoritative. Only videos that actually have a local transcript are
+    touched, and a transcript shorter than MIN_TRANSCRIPT_BODY_CHARS is
+    rejected as a title-only stub rather than uploaded over a working source.
+
+    Returns (attempted, succeeded, rejected_as_stub).
+    """
+    local_map = load_local_transcripts(transcripts_dir)
+    if not local_map:
+        print(f"No local transcripts with a #URL header under {transcripts_dir}/.")
+        return 0, 0, 0
+
+    index_map = load_index_entries_by_url(index_file)
+
+    success, output = run_command(
+        ["notebooklm", "source", "list", "--json"], capture_json=True)
+    if not success:
+        print(f"Error: Failed to list sources: {output}", file=sys.stderr)
+        return 0, 0, 0
+    sources = output.get("sources", [])
+
+    candidates = []
+    stubs = 0
+    for s in sources:
+        if s.get("type") == "text":
+            continue  # resync_text_sources()'s job, not this one
+        source_url = (s.get("url") or "").strip()
+        if not source_url:
+            continue
+        url = normalize_youtube_url(source_url)
+        if target_urls is not None and url not in target_urls:
+            continue
+        txt_path = local_map.get(url)
+        if txt_path is None:
+            continue
+
+        _, body = read_transcript_parts(txt_path)
+        if len(body.strip()) < MIN_TRANSCRIPT_BODY_CHARS:
+            print(f"  Rejecting {txt_path.name}: body is only "
+                  f"{len(body.strip())} chars — looks like a title-only stub.")
+            stubs += 1
+            continue
+
+        idx, idx_title = index_map.get(url, (0, s.get("title", "")))
+        candidates.append((s.get("id"), s.get("title", ""), url, txt_path, idx, idx_title))
+
+    if not candidates:
+        print("No native YouTube sources have a local transcript to replace them.")
+        return 0, 0, stubs
+
+    print(f"\n{len(candidates)} native YouTube source(s) will be replaced by local transcripts:")
+    for _, cloud_title, _, txt_path, idx, _ in candidates:
+        print(f"  #{idx}: {cloud_title[:50]}  ←  {txt_path.name}")
+
+    if not AUTO_YES:
+        answer = input(f"\nReplace {len(candidates)} YouTube source(s) with local text? [y/N] ").strip().lower()
+        if answer != 'y':
+            print("Aborted.")
+            return 0, 0, stubs
+    else:
+        print()
+
+    attempted = len(candidates)
+    succeeded = 0
+    for i, (source_id, cloud_title, url, txt_path, idx, idx_title) in enumerate(candidates, 1):
+        title = format_title_with_index(idx, idx_title) if idx else cloud_title
+        print(f"  [{i}/{attempted}] #{idx}: {title[:60]}")
+        start_time = time.time()
+        if _swap_in_local_text(source_id, txt_path, title):
+            # Tracking follows the source type: this video is now served by a
+            # whisper/corrected transcript, not a native import.
+            remove_tracking_entry(url, ok_file)
+            remove_tracking_entry(url, video2txt_file)
+            record_video2txt_url(idx, url, int(time.time() - start_time), video2txt_file)
+            succeeded += 1
+        time.sleep(delay_seconds)
+
+    return attempted, succeeded, stubs
+
+
+def normalize_transcripts_to_taiwan(start_path: Path) -> tuple[int, int]:
+    """Rewrite every transcripts/*.txt under start_path with Taiwan-standard
+    glyphs (裏→裡, 着→著). Local-only; touches no cloud source.
+
+    Exists because `t2tw(s2t(x)) == s2tw(x)` — transcripts converted before
+    `taiwan=True` can be brought up to standard in place, with no re-download
+    and no GPU time.
+
+    Returns (files_scanned, files_changed).
+    """
+    scanned = 0
+    changed = 0
+    for txt in sorted(start_path.rglob("transcripts/*.txt")):
+        scanned += 1
+        try:
+            original = txt.read_text(encoding='utf-8')
+        except OSError as e:
+            print(f"  SKIP {txt}: {e}")
+            continue
+        normalized = normalize_to_taiwan(original)
+        if normalized == original:
+            continue
+        try:
+            txt.write_text(normalized, encoding='utf-8')
+        except OSError as e:
+            print(f"  FAILED {txt}: {e}")
+            continue
+        changed += 1
+        print(f"  {txt}")
+    return scanned, changed
 
 
 def parse_remote_sshfs(value: str | None) -> tuple[str, str, str] | None:
@@ -4224,7 +4600,46 @@ Examples:
         metavar="URL",
         dest="text_back_to_video",
         help="Try to replace whisper text sources with native YouTube sources. "
-             "Optionally provide a video or playlist URL to filter which sources to attempt."
+             "Optionally provide a video or playlist URL to filter which sources to attempt. "
+             f"Refuses to run in a folder carrying a {KEEP_TRANSCRIPTS_MARKER} marker."
+    )
+    parser.add_argument(
+        "--resync-text",
+        type=str,
+        nargs='?',
+        const='__all__',
+        default=None,
+        metavar="URL",
+        dest="resync_text",
+        help="Push locally corrected transcripts/*.txt back into the notebook, replacing "
+             "any text source whose cloud copy has drifted from the local file. "
+             "Optionally filter by a video or playlist URL. Operates on cwd; never runs "
+             "as part of --auto/--update."
+    )
+    parser.add_argument(
+        "--text-over-video",
+        type=str,
+        nargs='?',
+        const='__all__',
+        default=None,
+        metavar="URL",
+        dest="text_over_video",
+        help="Replace native YouTube sources with the local corrected transcript "
+             "(the inverse of --text-back-to-video-effort). Only videos that have a local "
+             f"transcript are touched, and bodies under {MIN_TRANSCRIPT_BODY_CHARS} chars are "
+             "rejected as title-only stubs. Operates on cwd; never runs as part of --auto/--update."
+    )
+    parser.add_argument(
+        "--normalize-tw",
+        type=str,
+        nargs='?',
+        const='.',
+        default=None,
+        metavar="PATH",
+        dest="normalize_tw",
+        help="Rewrite every transcripts/*.txt under PATH (default: cwd) with Taiwan-standard "
+             "glyphs (裏→裡, 着→著). Local-only, touches no cloud source — retrofits transcripts "
+             "converted before the Taiwan-standard default."
     )
     parser.add_argument(
         "--update",
@@ -4320,6 +4735,19 @@ def main():
             sys.exit(1)
         print(f"Cleaning up audio files under {start_path}/\n")
         cleanup_mp3_files(start_path)
+        sys.exit(0)
+
+    # --normalize-tw: rewrite local transcripts with Taiwan-standard glyphs.
+    # Local-only — no notebook binding needed, so it exits before any chdir /
+    # NOTEBOOKLM_HOME work.
+    if args.normalize_tw is not None:
+        start_path = Path(args.normalize_tw).resolve()
+        if not start_path.is_dir():
+            print(f"Error: {start_path} is not a directory", file=sys.stderr)
+            sys.exit(1)
+        print(f"Normalizing transcripts to Taiwan-standard glyphs under {start_path}/\n")
+        scanned, changed = normalize_transcripts_to_taiwan(start_path)
+        print(f"\nScanned {scanned} transcript(s), rewrote {changed}.")
         sys.exit(0)
 
     # --add-video: add one YouTube video to the current folder's notebook,
@@ -4736,6 +5164,52 @@ def main():
         playlist_url_for_reindex = read_playlist_url_from_index(index_file)
         reindex_sources(playlist_url_for_reindex,
                         index_file, ok_file, video2txt_file)
+        sys.exit(0)
+
+    # --resync-text / --text-over-video (standalone): push local corrected
+    # transcripts up. Deliberately NOT reachable from --auto/--update — they
+    # mutate cloud sources, and a 270-folder sweep must never trigger that.
+    if args.resync_text is not None or args.text_over_video is not None:
+        raw_filter = args.resync_text if args.resync_text is not None else args.text_over_video
+        target_urls = None
+        if raw_filter != '__all__':
+            pid = extract_playlist_id(raw_filter)
+            if pid:
+                print(f"\nExtracting video URLs from playlist...")
+                videos = get_playlist_videos(build_playlist_url(pid))
+                target_urls = {normalize_youtube_url(v[0]) for v in videos}
+                print(f"Found {len(target_urls)} video URLs to filter by")
+            else:
+                target_urls = {normalize_youtube_url(raw_filter)}
+                print(f"\nSingle video URL filter: {raw_filter}")
+
+        if args.resync_text is not None:
+            attempted, succeeded, identical = resync_text_sources(
+                target_urls=target_urls,
+                index_file=index_file,
+                transcripts_dir=transcripts_dir,
+                delay_seconds=delay_seconds,
+            )
+            label, third = "RESYNC-TEXT", ("Already in sync", identical)
+        else:
+            attempted, succeeded, stubs = text_over_video(
+                target_urls=target_urls,
+                index_file=index_file,
+                transcripts_dir=transcripts_dir,
+                ok_file=ok_file,
+                video2txt_file=video2txt_file,
+                delay_seconds=delay_seconds,
+            )
+            label, third = "TEXT-OVER-VIDEO", ("Rejected as stub", stubs)
+
+        print(f"\n{'='*60}")
+        print(f"{label} SUMMARY")
+        print(f"{'='*60}")
+        print(f"  Attempted:  {attempted}")
+        print(f"  Succeeded:  {succeeded}")
+        print(f"  Failed:     {attempted - succeeded}")
+        print(f"  {third[0]}: {third[1]}")
+        print(f"{'='*60}")
         sys.exit(0)
 
     # --text-back-to-video-effort (standalone): replace text sources with YouTube, then exit

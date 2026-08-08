@@ -165,8 +165,21 @@ python3 manipulate_notebooklm_from_yt_playlist.py --attach-playlist "https://...
 # (Then run --auto separately to bulk-import the playlist's videos)
 
 # Try to replace whisper text sources with native YouTube sources
+# (refuses to run in a folder carrying a .keep_transcripts marker)
 python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort          # all text sources
 python3 manipulate_notebooklm_from_yt_playlist.py --text-back-to-video-effort "https://..." # specific URL
+
+# Push locally corrected transcripts/*.txt back into the notebook (cwd only)
+python3 manipulate_notebooklm_from_yt_playlist.py --resync-text                 # every drifted text source
+python3 manipulate_notebooklm_from_yt_playlist.py --resync-text "https://..."   # one video / one playlist
+
+# Replace NATIVE YouTube sources with the local corrected transcript (cwd only)
+python3 manipulate_notebooklm_from_yt_playlist.py --text-over-video
+python3 manipulate_notebooklm_from_yt_playlist.py --text-over-video "https://..."
+
+# Rewrite local transcripts with Taiwan-standard glyphs (裏→裡, 着→著). Local-only.
+python3 manipulate_notebooklm_from_yt_playlist.py --normalize-tw               # cwd
+python3 manipulate_notebooklm_from_yt_playlist.py --normalize-tw /path/to/dir
 
 # Disable remote SSHFS (on by default with cschen@genesis)
 python3 manipulate_notebooklm_from_yt_playlist.py --no-remote-sshfs "https://..."
@@ -220,14 +233,17 @@ YouTube playlist on every `--update`). Empty → **Curated** (hand-picked; only
 
 ### 4. `main()` is a flat dispatch of early-exit modes
 
-In order (`main()` starts ~line 4185):
+In order (`main()` starts ~line 4290):
 
-1. `--update` → `--reauth` → `--cleanup` → `--add-video` → `--attach-playlist`
-   → `--new-notebook` — each does its thing and `sys.exit()`s.
+1. `--update` → `--reauth` → `--cleanup` → `--normalize-tw` → `--add-video`
+   → `--attach-playlist` → `--new-notebook` — each does its thing and
+   `sys.exit()`s. `--normalize-tw` is purely local, so it exits before any
+   `chdir` / `NOTEBOOKLM_HOME` work.
 2. `setup_mode = args.setup or args.auto or args.target_notebook` — the shared
    folder/binding/standardize block; `--setup` exits here, `--auto` continues.
-3. `--reindex` (unless `--auto`) and `--text-back-to-video-effort` (unless
-   `--auto`) — standalone exits.
+3. Post-binding standalone exits (notebook already selected, cwd-scoped):
+   `--reindex`, then `--resync-text` / `--text-over-video`, then
+   `--text-back-to-video-effort` — all skipped under `--auto`.
 4. Fall-through: the main pipeline (index → reindex → upload loop →
    text-back-to-video). `--list-only` is *not* a dispatch mode — it's a flag
    inside this pipeline that skips the notebook check and stops after writing
@@ -325,13 +341,33 @@ Use `--no-local-fallback` to exit instead of falling back to local whisper.
      fallback for when local Chrome is closed / cookies expired)
 3. Transcribe with whisper:
    - --language Chinese
-   - --initial_prompt 繁體中文
+   - --initial_prompt <WHISPER_INITIAL_PROMPT, or the folder's .whisper_prompt>
    - --verbose True (shows real-time progress)
-4. Convert transcript 簡體 → 正體中文 (opencc)
+4. Convert transcript 簡體 → 正體中文 (opencc `s2tw`)
 5. Prepend `#URL <video_url>` as first line (traceability)
 6. Save to transcripts/<title>.txt
 7. Add as text source to NotebookLM
 ```
+
+### Getting Traditional output out of whisper directly
+
+Post-conversion can't be trusted alone: opencc has to *guess* on one-to-many
+restorations (发 → 發/髮, 干 → 乾/幹/干, 后 → 後/后) and a wrong guess is
+invisible afterwards. Text that is Traditional coming out of the decoder never
+raises the question, so the prompt is the primary lever and opencc is the net.
+
+- **`WHISPER_INITIAL_PROMPT`** is a full Traditional sentence, not the bare
+  `繁體中文` this used to send — four characters are too little to steer the
+  decoder. A folder overrides it with a **`.whisper_prompt`** file (used by the
+  台語漢字學 folders). Keep overrides short: whisper caps the prompt at 224
+  tokens and silently eats audio context past that.
+- **Quote the prompt for the remote paths.** `ssh` joins its trailing argv with
+  spaces and hands the result to the *remote* shell, which re-splits it — so
+  `whisper_via_sshfs` and `whisper_via_ssh` both `shlex.quote()` it even though
+  one is a list-form `sp.run`. Only the local path can pass it raw. This is why
+  the old value worked: `繁體中文` has no spaces.
+- **The Colab path has no prompt lever** — the Gradio endpoint takes a single
+  audio input (`fn_index=0`), so `--colab-url` transcripts depend on opencc alone.
 
 ### Genesis GPU activity probe
 
@@ -409,6 +445,34 @@ Attempts to replace whisper text sources with native YouTube imports:
 ```
 Also runs automatically at the end of every normal upload session.
 
+## Hand-Corrected Transcripts (`.keep_transcripts`)
+
+Some folders (the 台語漢字學 family) hold transcripts that were hand-corrected
+against 台語漢字學 scholarship. Those corrections must survive `--update`, and
+the default pipeline is actively hostile to them: `text_back_to_video_effort()`
+runs at the end of *every* upload session and would swap a corrected text source
+for a native YouTube import whose captions are ASR.
+
+Drop an empty **`.keep_transcripts`** next to `index.list` to opt the folder out.
+The guard sits at the top of `text_back_to_video_effort()` — the single choke
+point covering both the `--auto` tail and the standalone flag — so a protected
+folder makes zero cloud calls. To undo, delete the marker; there is no override
+flag by design.
+
+The marker only stops the cloud from overwriting local files. Pushing
+corrections **up** is a separate, always-explicit step:
+
+| Cloud source is… | Use | What it does |
+|---|---|---|
+| a text source that drifted from the local txt | `--resync-text` | add local txt → verify → delete old source |
+| a native YouTube import | `--text-over-video` | same swap, plus moves the row from `add_source_ok.txt` to `add_source_video2txt.txt` |
+
+Both operate on cwd, compare/act only where a local `transcripts/*.txt` carries a
+matching `#URL` header, and are **deliberately unreachable from `--auto` /
+`--update`** — a 270-folder sweep must never mutate cloud sources this way.
+`--text-over-video` additionally rejects any transcript whose body is under
+`MIN_TRANSCRIPT_BODY_CHARS` (200) as a title-only stub.
+
 ## File Structure
 
 ```
@@ -420,6 +484,8 @@ Also runs automatically at the end of every normal upload session.
 ├── add_source_skip.txt     # Skipped (when --without-whisper)
 ├── add_source_working.lock # Multi-session coordination (auto-managed)
 ├── update.log              # Last --update run output (per folder)
+├── .keep_transcripts       # Optional marker: transcripts are hand-corrected
+├── .whisper_prompt         # Optional per-folder whisper --initial_prompt
 ├── transcripts/            # Whisper output folder
 │   ├── <title>.mp3         # Downloaded audio
 │   ├── <title>.txt         # Transcripts (正體中文)
@@ -491,7 +557,13 @@ Format: `<index> <url>`
 | `add_text_source(txt, title)` | Add text file to NotebookLM |
 | `auto_setup(url)` | Create subfolder, copy auth, find/create notebook |
 | `find_or_create_notebook(title)` | Find existing or create new notebook by playlist title |
-| `text_back_to_video_effort(...)` | Replace whisper text sources with native YouTube sources |
+| `text_back_to_video_effort(...)` | Replace whisper text sources with native YouTube sources (no-ops under `.keep_transcripts`) |
+| `resync_text_sources(...)` | Push locally corrected transcripts back over drifted cloud text sources |
+| `text_over_video(...)` | Replace native YouTube sources with the local corrected transcript |
+| `normalize_transcripts_to_taiwan(path)` | Rewrite local transcripts with Taiwan-standard glyphs (`t2tw`, in place) |
+| `load_local_transcripts(dir)` | Map canonical URL → local txt via the `#URL` header (never by filename) |
+| `whisper_initial_prompt()` | Folder's `.whisper_prompt`, else `WHISPER_INITIAL_PROMPT` |
+| `transcripts_are_protected()` | True when `.keep_transcripts` is present in cwd |
 | `run_update(start_path, verbose, debug)` | Traverse dirs, run `--auto` for each playlist folder |
 | `cleanup_mp3_files(start_path)` | Delete audio files where matching txt exists |
 | `find_playlist_folders(start_path)` | Find subdirs containing index.list files |
@@ -595,10 +667,16 @@ notebooklm source rename <source_id> "New Title"
    - Helps sort/identify sources in NotebookLM
    - Regex to extract: `\[(\d+)\]`
 
-2. **正體中文 Conversion**: Applied to:
-   - Source title in NotebookLM
-   - Transcript content (txt body)
-   - Filenames (mp3, txt)
+2. **正體中文 Conversion** — two configs, and the split is load-bearing:
+
+   | Applied to | Config | Why |
+   |---|---|---|
+   | Source title in NotebookLM, folder names, mp3/txt filenames | `s2t` (`convert_to_traditional(x)`) | Every existing folder and cloud notebook was named with it. Switching the default would make the next `--update` rename folders on disk *and* in the cloud (measured: 1 of 270 names moves — 林哲羣 → 林哲群). |
+   | Transcript bodies | `s2tw` (`convert_to_traditional(x, taiwan=True)`) | Taiwan-standard glyphs — 裡/著 rather than 裏/着. For 台語漢字學 material the glyph choice *is* the content. |
+
+   `normalize_to_taiwan()` (`t2tw`) retrofits transcripts written before the
+   Taiwan default existed: `t2tw(s2t(x)) == s2tw(x)`, verified, so
+   `--normalize-tw` fixes them in place with no re-download and no GPU time.
 
 3. **Error Source Cleanup**: Runs at startup AND after each failure to prevent orphaned error entries
 

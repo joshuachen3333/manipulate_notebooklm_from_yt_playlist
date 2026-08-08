@@ -1073,3 +1073,17 @@ manipulate_notebooklm_from_yt_playlist --update -v → Checking NotebookLM auth.
 
 
 
+##     2026-08-08 12:22 CST
+
+###    User Prompt
+登入了
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 確認 notebooklm login 完成，放行 0.8.0 升級後的四步驗證
+- Diff: 驗證全綠：list --json OK；--reauth 無痛高數 正確走 profiles/default 讀、folder 扁平寫；--update -v 無痛高數 全程跑通（reindex 3/3 native-URL match），該 folder .notebooklm/ 已自動遷移成 profiles/default 佈局；--update 無痛線代 + Algorithmic_Trading_With_Python 實際新增上傳一支影片 [100] I Built a Gold RL Trading Bot。三 folder 後全域 session 仍有效 → 多 folder cookie 輪替互撤的疑慮排除，不需改共用 cookie jar 設計。youtube_list 共 267 index.list / 268 .notebooklm，其餘 265 個會各自首次執行時自動遷移
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

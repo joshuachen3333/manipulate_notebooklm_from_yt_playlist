@@ -1228,3 +1228,16 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 13:57 CST
+
+###    User Prompt
+11 部影片的那一批怎麼做？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問 11 支那批（台語漢字學, -9QrfL7）該怎麼跑
+- Diff: 查證：台語漢字學短篇/ 已就緒（Curated 狀態，line1 空、line2 綁 4c7ba635、line3 = Joshua_台語漢字學短篇）；--attach-playlist 寫入 line1 後，--auto 會走 in-place 分支並以 line2 為權威綁定，不會誤建新 notebook、也不會改資料夾名。另比對搶救的 4 份逐字稿（YenxCVDVZSA/MU5F5dKF8sw/jH1bkoucF0E/WAPFEVBzMas）—— 全部屬於 120 支那條，與 11 支這批無關
+
+
+
+

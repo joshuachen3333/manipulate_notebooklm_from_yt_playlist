@@ -1382,3 +1382,31 @@ at /Users/joshua/work/youtube_list/台語漢字學/陳世明老師, can I run --
 
 
 
+##     2026-08-08 17:53 CST
+
+###    User Prompt
+--normalize-tw 全樹回溯（4121/4539 檔）go
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 授權執行 --normalize-tw 全樹回溯
+- Diff: 待執行：4121/4539 檔改為臺灣標準字形。需先確認 --update sweep 範圍避免與 index.list 改寫互撞，並備份 index.list（t2tw 不可逆：纔/才 皆映射為才）
+
+
+
+
+##     2026-08-08 17:59 CST
+
+###    User Prompt
+顯然是 聲母 韻母, 而非 生母孕母
+whisper 有 carry_initial_prompt 選項 把它確實普遍套用
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 指出 生母孕母 應為 聲母韻母；要求 carry_initial_prompt 確實普遍套用
+- Diff: 確認 whisper 有 carry_initial_prompt，三個路徑（local/sshfs/ssh）全部加上 True；查明 condition_on_previous_text=False 會讓 initial_prompt 只作用第一窗（transcribe.py:503-505），這是逐字稿第三段起掉回簡體的主因。台語資料夾 .whisper_prompt 加入聲母/韻母/文讀/白話音/本字/連音/拗音
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

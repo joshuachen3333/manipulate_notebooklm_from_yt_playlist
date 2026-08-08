@@ -692,3 +692,14 @@ but that's exactly what I want. so tks
 
 
 
+##     2026-08-08 17:50 CST
+
+###    User Prompt
+把這個 reauth 場景也記錄下來 (*.md)
+
+###    result
+文件裡的診斷腳本原樣抽出來執行，正常運作（現在 sweep 已經跑到 `臺語漢字學`，所以換它和 global 是 CURRENT —— 這就是 sweep 進行中的正常樣貌）：
+
+
+
+

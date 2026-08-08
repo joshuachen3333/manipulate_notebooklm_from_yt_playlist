@@ -57,7 +57,19 @@ SOURCE_MARKER_EXTRA = "extra"
 # decoder toward Traditional output far better than the bare "繁體中文" this
 # used to send — and output that is Traditional to begin with never hits
 # opencc's one-to-many restoration guesswork (发 → 發/髮, 干 → 乾/幹/干).
-# A folder can override it by dropping a .whisper_prompt file next to index.list.
+# Always passed with `--carry_initial_prompt True`. Without it, whisper applies
+# initial_prompt to the FIRST 30s window only: `condition_on_previous_text False`
+# sets prompt_reset_since past the initial-prompt tokens after window 1
+# (whisper/transcribe.py:503-505), so every later window decodes with no prompt
+# at all and drifts back to Simplified. Observed live — first two segments
+# Traditional, everything after Simplified. carry_initial_prompt re-prepends the
+# prompt to each window (transcribe.py:288-291) without carrying previous text,
+# so it fixes the drift with no repetition-loop risk.
+#
+# A folder can override the text by dropping a .whisper_prompt file next to
+# index.list. Note the override then applies to *every* window, which makes
+# domain vocabulary in it much more effective — and its bleed risk proportionally
+# larger.
 #
 # The global default MUST stay domain-neutral — it is what every folder gets,
 # from 台語 lectures to MIT/Harvard maths. It states register and orthography
@@ -1914,6 +1926,7 @@ def whisper_fallback(video_url: str, video_title: str, transcripts_dir: Path) ->
             "--verbose", "True",
             # Local run: sp.run list form, no shell involved — no quoting needed.
             "--initial_prompt", whisper_initial_prompt(),
+            "--carry_initial_prompt", "True",
             "--condition_on_previous_text", "False"
         ]
     )  # No capture - output goes directly to terminal
@@ -2338,6 +2351,7 @@ def whisper_via_sshfs(
         # REMOTE shell, which re-splits it — so a multi-word prompt has to be
         # quoted even though this is a list-form sp.run.
         "--initial_prompt", shlex.quote(whisper_initial_prompt()),
+        "--carry_initial_prompt", "True",
         "--condition_on_previous_text", "False"
     ]
 
@@ -2578,6 +2592,7 @@ def whisper_via_ssh(
         # Same remote-shell re-split as whisper_via_sshfs; shlex.quote's single
         # quotes survive the surrounding double quotes and the bash -l -c reparse.
         f"--initial_prompt {shlex.quote(whisper_initial_prompt())} "
+        f"--carry_initial_prompt True "
         f"--condition_on_previous_text False\""
     )
 

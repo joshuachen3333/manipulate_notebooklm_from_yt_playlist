@@ -360,6 +360,8 @@ Use `--no-local-fallback` to exit instead of falling back to local whisper.
 3. Transcribe with whisper:
    - --language Chinese
    - --initial_prompt <WHISPER_INITIAL_PROMPT, or the folder's .whisper_prompt>
+   - --carry_initial_prompt True (required — see below)
+   - --condition_on_previous_text False
    - --verbose True (shows real-time progress)
 4. Convert transcript 簡體 → 正體中文 (opencc `s2tw`, Taiwan standard)
 5. Prepend `#URL <video_url>` as first line (traceability)
@@ -384,6 +386,21 @@ raises the question, so the prompt is the primary lever and opencc is the net.
   there it is a tradeoff worth spot-checking after the first re-transcription.
   Keep overrides short: whisper caps the prompt at 224 tokens and silently eats
   audio context past that.
+- **`--carry_initial_prompt True` is not optional.** Without it the prompt
+  reaches only the *first* 30-second window. With `condition_on_previous_text
+  False`, whisper sets `prompt_reset_since` past the initial-prompt tokens after
+  window 1 (`whisper/transcribe.py:503-505`), so every later window decodes with
+  no prompt at all and drifts straight back to Simplified — observed live: two
+  Traditional segments, then Simplified for the rest of the video.
+  `carry_initial_prompt` re-prepends the prompt to each window
+  (`transcribe.py:288-291`) *without* carrying previous text, so it fixes the
+  drift and carries no repetition-loop risk. All three whisper paths (local,
+  SSHFS, SSH) pass it; there is no fourth path.
+- **The prompt is also the only lever for domain vocabulary.** Since it now
+  reaches every window, terms in a `.whisper_prompt` genuinely steer the ASR —
+  the 台語 folders lost 聲母/韻母 to 生母/孕母 before they were listed. The bleed
+  risk grows in proportion, so after changing one, spot-check the next transcript
+  for prompt words appearing where the audio didn't say them.
 - **Quote the prompt for the remote paths.** `ssh` joins its trailing argv with
   spaces and hands the result to the *remote* shell, which re-splits it — so
   `whisper_via_sshfs` and `whisper_via_ssh` both `shlex.quote()` it even though

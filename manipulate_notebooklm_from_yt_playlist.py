@@ -992,7 +992,16 @@ def find_or_create_notebook(playlist_title: str) -> str:
 
     # No match — create new notebook with account-aware prefix
     # (Christine: "Joshua_<title>" for disambiguation; Joshua: just "<title>")
-    new_title = f"{notebook_title_prefix()}{playlist_title}"
+    # Strip any prefix the caller already applied first: new_notebook_setup()
+    # passes an already-prefixed title, and blindly re-prepending produced
+    # "Joshua_Joshua_<name>". Strip-then-prepend makes this idempotent for
+    # both callers (auto_setup passes a bare playlist title).
+    bare_title = playlist_title
+    for prefix in ("Joshua_", "Joshua ", "Joshua"):
+        if bare_title.startswith(prefix):
+            bare_title = bare_title[len(prefix):].strip()
+            break
+    new_title = f"{notebook_title_prefix()}{bare_title or playlist_title}"
     print(f"  Creating notebook: {new_title}")
     success, output = run_command(["notebooklm", "create", new_title, "--json"], capture_json=True)
     if not success:

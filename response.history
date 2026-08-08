@@ -666,3 +666,14 @@ but that's exactly what I want. so tks
 
 
 
+##     2026-08-08 13:48 CST
+
+###    User Prompt
+(--new-notebook 產生 Joshua_Joshua_ 雙前綴)
+
+###    result
+確認是 bug：new_notebook_setup() 傳進去的 full_title 已含 Joshua_ 前綴，find_or_create_notebook() 在建立分支又加一次。已修成 strip-then-prepend（對兩個 caller 都冪等），py_compile 通過並 push。收尾動作：4c7ba635 已 rename 成 Joshua_台語漢字學短篇；54ec7b45 查證 created_at 是今天 13:17（今天新建、非舊 notebook）後已刪除。本機 index.list 第 3 行本來就是正確的 Joshua_台語漢字學短篇，不用改。下一步：--attach-playlist 再 --auto。
+
+
+
+

@@ -1169,3 +1169,36 @@ manipulate_notebooklm_from_yt_playlist --update -v    (regular update)
 
 
 
+##     2026-08-08 13:34 CST
+
+###    User Prompt
+what sweep?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問「什麼 sweep？」—— 澄清是哪個 process 在跑
+- Diff: 查明：PID 46759 是 Joshua 自己在 13:21:56 於 台語漢字學/陳世明老師/ 下起的 --update -v（非 youtube_list 全域 267 folder sweep），子程序 46761 正在跑 臺語漢字學/ 的 --auto（120 支）。它就是持有活著 cookie 分支的那個，所以 13:23 / 13:26 兩次 閩南語漢字學 --auto 才會被彈回要求 login
+
+
+
+
+##     2026-08-08 13:48 CST
+
+###    User Prompt
+manipulate_notebooklm_from_yt_playlist --new-notebook "台語漢字學短篇"
+
+  Notebook title: Joshua_台語漢字學短篇
+  Folder: 台語漢字學短篇/
+  Copied auth to .notebooklm/
+Setting up notebook...
+  Creating notebook: Joshua_Joshua_台語漢字學短篇
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 回報 --new-notebook 建出的雲端 notebook 名稱變成 Joshua_Joshua_台語漢字學短篇
+- Diff: 找到 bug：new_notebook_setup() 已把 full_title 加好 Joshua_ 前綴，find_or_create_notebook() 建立時又 f"{notebook_title_prefix()}{playlist_title}" 再加一次。修法：在建立分支先剝掉既有 Joshua_/Joshua 前綴再加，讓兩個 caller 都冪等（auto_setup 傳的是裸 playlist 標題，行為不變）。已 py_compile 並 push。同時收尾：雲端 4c7ba635 rename 回 Joshua_台語漢字學短篇；確認 54ec7b45 是今天 13:17 才建的（非舊 notebook）後刪除
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

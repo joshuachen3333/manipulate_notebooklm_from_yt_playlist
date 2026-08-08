@@ -1087,3 +1087,16 @@ manipulate_notebooklm_from_yt_playlist --update -v → Checking NotebookLM auth.
 
 
 
+##     2026-08-08 12:23 CST
+
+###    User Prompt
+整個 update 我自己重跑, 你幫我確定把程式更正即可
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 分工：完整 --update sweep 由 Joshua 自己跑；我負責把程式對 0.8.0 的相容性修正到位
+- Diff: 待辦：全面稽核腳本所有 notebooklm CLI 呼叫（子命令、旗標、JSON 欄位形狀）對 0.8.0 的相容性
+
+
+
+

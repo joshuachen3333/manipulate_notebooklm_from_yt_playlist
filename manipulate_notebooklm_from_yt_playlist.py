@@ -37,6 +37,10 @@ import opencc
 
 # Constants
 DEFAULT_DELAY_SECONDS = 1
+# How many times a single --update sweep may re-push global auth and retry a
+# folder that failed on an auth error. Bounded so a genuinely dead global auth
+# can't turn into one re-auth pass per folder.
+MAX_SWEEP_REAUTHS = 10
 DEBUG = False  # Set via --debug flag
 AUTO_YES = False  # Set via -y flag
 # Fixed visual width (chars) for the title field (including surrounding quotes)
@@ -90,8 +94,15 @@ def global_storage_state() -> Path:
 
 
 def refresh_auth() -> bool:
-    """Copy fresh auth from ~/.notebooklm/ to local .notebooklm/ if it exists and is newer.
-    Returns True if auth was refreshed."""
+    """Copy fresh auth from ~/.notebooklm/ into the folder-local .notebooklm/.
+    Returns True if auth was refreshed.
+
+    Called only from the auth-failure retry path, so the test is "does the
+    global copy differ from ours", NOT "is it newer". mtime is unusable here:
+    run_reauth() copies with copy2 (preserving mtime), and notebooklm-py >= 0.4
+    rotates __Secure-1PSIDTS on every use — a folder copy can be revoked while
+    still carrying the same timestamp as the (valid) global one.
+    """
     local_dir = Path(os.environ.get("NOTEBOOKLM_HOME", ".notebooklm"))
     local_auth = storage_state_path(local_dir)
     global_auth = global_storage_state()
@@ -102,8 +113,12 @@ def refresh_auth() -> bool:
     if not global_auth.exists():
         return False
 
-    # Only refresh if global is newer than local
-    if global_auth.stat().st_mtime <= local_auth.stat().st_mtime:
+    try:
+        if local_auth.samefile(global_auth):
+            return False  # Already the same file (symlink/bind) — nothing to copy
+        if local_auth.read_bytes() == global_auth.read_bytes():
+            return False  # Identical content — a re-copy would not help
+    except OSError:
         return False
 
     shutil.copy2(global_auth, local_auth)
@@ -3502,6 +3517,8 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
     updated_details = []  # list of (rel_path, [new_video_titles])
     script_path = Path(__file__).resolve()
     stream_output = verbose or debug
+    # Mid-sweep auth recovery budget (see the retry block in the loop below).
+    reauth_retries = 0
 
     for i, (folder_path, playlist_url) in enumerate(folders, 1):
         # Find the matching start_path for this folder to compute relative path
@@ -3528,60 +3545,76 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
         if debug:
             cmd.append("--debug")
 
-        if stream_output:
-            # Verbose/debug: stream output in real-time while collecting for log
-            print(f"\n{'='*60}")
-            print(header)
-            print(f"{'='*60}")
+        def _exec_folder(show_header: bool = True) -> tuple[str, int] | None:
+            """Run cmd in folder_path. Returns (output, returncode), or None if
+            the run died (timeout / spawn failure) — caller counts that as an error."""
+            if stream_output:
+                if show_header:
+                    print(f"\n{'='*60}")
+                    print(header)
+                    print(f"{'='*60}")
+                output_lines = []
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(folder_path),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        text=True,
+                    )
+                    for line in proc.stdout:
+                        print(line, end="", flush=True)
+                        output_lines.append(line)
+                    proc.wait(timeout=3600)
+                    return "".join(output_lines), proc.returncode
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    print("\nTIMEOUT (1 hour limit)")
+                    return None
+                except Exception as e:
+                    print(f"\nERROR: {e}")
+                    return None
+            else:
+                if show_header:
+                    print(f"{header} ...", end=" ", flush=True)
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        cwd=str(folder_path),
+                        capture_output=True,
+                        text=True,
+                        timeout=3600,
+                        stdin=subprocess.DEVNULL,
+                    )
+                    return result.stdout + result.stderr, result.returncode
+                except subprocess.TimeoutExpired:
+                    print("TIMEOUT (1 hour limit)")
+                    return None
+                except Exception as e:
+                    print(f"ERROR: {e}")
+                    return None
 
-            output_lines = []
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(folder_path),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                )
-                for line in proc.stdout:
-                    print(line, end="", flush=True)
-                    output_lines.append(line)
-                proc.wait(timeout=3600)
-                output = "".join(output_lines)
-                returncode = proc.returncode
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                print("\nTIMEOUT (1 hour limit)")
-                errors += 1
-                continue
-            except Exception as e:
-                print(f"\nERROR: {e}")
-                errors += 1
-                continue
-        else:
-            # Default: capture output silently, show short status line
-            print(f"{header} ...", end=" ", flush=True)
+        run_result = _exec_folder()
+        if run_result is None:
+            errors += 1
+            continue
+        output, returncode = run_result
 
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=str(folder_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=3600,
-                    stdin=subprocess.DEVNULL,
-                )
-                output = result.stdout + result.stderr
-                returncode = result.returncode
-            except subprocess.TimeoutExpired:
-                print("TIMEOUT (1 hour limit)")
+        # Mid-sweep auth recovery: notebooklm-py >= 0.4 rotates cookies on use,
+        # so a folder copy handed out at the start of the sweep can be revoked
+        # by the time we reach it. Re-push the global auth once and retry the
+        # folder before calling it an error. Guarded so one dead global auth
+        # can't trigger 267 re-auth passes.
+        if returncode != 0 and reauth_retries < MAX_SWEEP_REAUTHS and _is_auth_failure(output):
+            reauth_retries += 1
+            print("  (auth revoked mid-sweep — re-pushing global auth and retrying)")
+            run_reauth(start_paths)
+            run_result = _exec_folder(show_header=False)
+            if run_result is None:
                 errors += 1
                 continue
-            except Exception as e:
-                print(f"ERROR: {e}")
-                errors += 1
-                continue
+            output, returncode = run_result
 
         # Folder may have been renamed inside the subprocess (when the user
         # changed line 3 of index.list). Rediscover the live path before

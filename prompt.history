@@ -1100,3 +1100,17 @@ manipulate_notebooklm_from_yt_playlist --update -v → Checking NotebookLM auth.
 
 
 
+##     2026-08-08 12:32 CST
+
+###    User Prompt
+整個 update 我自己重跑, 你幫我確定把程式更正即可
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 分工：sweep 由 Joshua 自己跑，我只負責修程式；並要求升級 yt-dlp
+- Diff: 程式四項修正已 push（profile-aware 路徑 / refresh_auth 內容比對 / mid-sweep auth 復原 / global 死亡即中止 sweep）；yt-dlp 升到 2026.07.04。教訓：不可用竄改 cookie 對 live 帳號做測試（會被 Google 撤銷整個 session，害 Joshua 的 sweep 在 [15/267] 全滅）；不可在對方 sweep 執行中編輯 ~/.local/bin symlink 指向的腳本
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

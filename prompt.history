@@ -1139,3 +1139,20 @@ but that's exactly what I want. so tks
 
 
 
+##     2026-08-08 13:23 CST
+
+###    User Prompt
+write these 2 down to a daily_usage.md
+manipulate_notebooklm_from_yt_playlist --auto "https://www.youtube.com/watch?v=LPEuY9zWbdw&list=PLH1v_wCmILkqdy3rVsg5nIgptjbdKVCSa" (for new play list)
+manipulate_notebooklm_from_yt_playlist --update -v    (regular update)
+(and more if you think it is worth mentioning)
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求把兩條主線指令寫成 daily_usage.md，並自行補充值得記的其他項目
+- Diff: 新增 daily_usage.md（正體中文操作手冊）：兩條主線（--auto 新 playlist / --update -v 例行更新）＋ 其他常用指令（login、--reauth、--add-video、--reindex、--list-only、--cleanup）＋ 改名流程（index.list 第 3 行為唯一真相）＋ 踩雷筆記（URL 引號、cwd 敏感、絕不手動複製 storage_state.json、sweep 中途 auth 死亡的自動處理、雙帳號 nbswitch、台語內容 whisper 品質）＋ 環境版本表（notebooklm-py 0.8.0 不可退回、yt-dlp 2026.07.04）
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/daily_usage.md`
+
+
+
+

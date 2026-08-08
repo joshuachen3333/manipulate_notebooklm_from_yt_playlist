@@ -1019,3 +1019,44 @@ env NOTEBOOKLM_HOME=/path/to/dir notebooklm ask ... # 明確指定帳號
 
 
 
+##     2026-06-13 11:15 CST
+
+###    User Prompt
+I want to switch to christine and login the expired token, how to do that?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問如何切到 Christine 帳號並重登過期的 token
+- Diff: 回覆 SOP: cd ~ → nbswitch christine → notebooklm login (Christine 手機驗證); 替代方案 --storage 絕對路徑 (但 browser_profile 不會同步刷新)
+
+
+
+
+##     2026-08-08 09:35 CST
+
+###    User Prompt
+/init
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: /init：分析 codebase 並改進既有 CLAUDE.md（非新建）
+- Diff: CLAUDE.md +189/-14：新增「Everyday Commands」「Verification / dry runs」「Architecture」（三層 state / cwd-scoped NOTEBOOKLM_HOME / Managed vs Curated / main() flat dispatch / auth self-healing）「Dual-Account」「Companion Docs」段落；修正三個過時事實（-i 預設 20s→1s、notebooklm auth→login、--colab-timeout 600s→0）；index.list 格式改為 3 header + 5 欄並指向 INDEX_LIST_SPEC.md；補 --reauth / whisper_via_ssh；刪除重複的 --reindex 範例
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/CLAUDE.md`
+
+
+
+
+##     2026-08-08 09:35 CST
+
+###    User Prompt
+通常, 我例行執行更新 playlist 內容的時候, 參數下的是什麼？面對一個新的 playlist 所下的參數又是什麼？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問例行更新 playlist vs 新 playlist 各該下什麼參數
+- Diff: 答案：例行更新＝在 parent dir 跑 --update（掃所有含 index.list 的子資料夾，各自 subprocess 跑 --auto）；新 playlist＝在 parent dir 跑 --auto "<playlist_url>"。此問題直接促成 CLAUDE.md 新增最上方「Everyday Commands (the two that matter)」段落，把這兩條從 40+ 行 flag 目錄中提到最前面
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/CLAUDE.md`
+
+
+
+

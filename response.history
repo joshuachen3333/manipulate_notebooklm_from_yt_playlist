@@ -520,3 +520,83 @@ env -u 解開 zshrc wrapper 注入，避免 cwd 攔截。
 
 
 
+##     2026-06-13 11:17 CST
+
+###    User Prompt
+I want to switch to christine and login the expired token, how to do that?
+
+###    result
+cd ~                  # 避免 cwd 內 .notebooklm/ 的 wrapper hijack
+nbswitch christine    # symlink → ~/.notebooklm-christine
+notebooklm login      # 開瀏覽器，Christine 用手機完成 OAuth → 按 ENTER 存檔
+
+完事後:
+- ~/.notebooklm-christine/storage_state.json 會被新的覆蓋 (mtime 跳到現在)
+- ~/.notebooklm-joshua/ 完全不動，joysons3 那邊 cookies 還在效期內，不受影響
+- 之後 nbswitch christine ↔ nbswitch joshua 兩邊都可用，effective 到各自 cookies 下次過期
+
+如果你 cwd 不便 cd 出去 (中途有未存的東西)，可改用絕對路徑 bypass:
+notebooklm --storage ~/.notebooklm-christine/storage_state.json login
+
+但 --storage 只覆寫 storage_state.json 路徑、不覆寫 browser_profile 路徑 (後者跟著 NOTEBOOKLM_HOME)，所以 Christine 的 browser_profile 不會同步刷新。一般情況用 cd ~ + nbswitch 比較乾淨。
+
+完成後告訴我，我順手 log 一下這輪 + 你之前還有兩個 standby 進度 (主程式 Joshua_ 前綴改造 + book1_dream_v0_5vid 網頁 share 結果) 可以一起 catch up。
+
+
+
+
+##     2026-08-08 09:36 CST
+
+###    User Prompt
+/init  ＋  通常, 我例行執行更新 playlist 內容的時候, 參數下的是什麼？面對一個新的 playlist 所下的參數又是什麼？
+
+###    result
+先回你的問題（也已經寫進 CLAUDE.md 最上方）：
+
+## 你日常用的兩條指令
+
+```bash
+# 1. 例行更新既有 playlist —— 在「放所有 playlist 子資料夾的母目錄」跑
+python3 manipulate_notebooklm_from_yt_playlist.py --update
+python3 manipulate_notebooklm_from_yt_playlist.py --update -v      # 想看每個子程序完整輸出
+
+# 2. 全新 playlist —— 同樣在母目錄跑，一發到底
+python3 manipulate_notebooklm_from_yt_playlist.py --auto "https://www.youtube.com/playlist?list=PLxxx"
+```
+
+`--update` 會掃出每個含 `index.list` 的子資料夾，各自 `cwd=<該資料夾>` 開 subprocess 跑 `--auto`（每個 1 小時 timeout，輸出落在該資料夾的 `update.log`）。`--auto` 則是：建資料夾 → 複製 auth → find/create notebook → 建 index.list → reindex → 上傳 → text-back-to-video。其餘 40 幾個 flag 基本上都是「這兩條出事時」才用的細部工具。
+
+## CLAUDE.md 已存在，所以我做的是改進而非重建
+
+用 `Edit` 逐項改（你 working tree 裡 CLAUDE.md 還有 +23 行未 commit 的 cookies fallback / GPU probe 內容，沒有被覆蓋）。淨變動 **+189 / -14**，共 8 項：
+
+**修正三個過時事實**
+1. `-i` 預設值 `20s` → **`1s`**（`DEFAULT_DELAY_SECONDS = 1`，已對照上傳迴圈確認沒有第二個 sleep 常數）
+2. Setup 段的 `notebooklm auth` → **`notebooklm login`**（腳本裡 7 處錯誤訊息都是 login）
+3. Troubleshooting 說 `--colab-timeout` 預設 600s，與 Usage 段的 `0` 自相矛盾 → 統一成 **`0`（無 timeout）**
+
+**新增 /init 真正要的兩塊**
+
+4. **Everyday Commands** —— 就是上面那兩條，提到檔案最前面
+5. **Verification / dry runs** —— 這專案沒有測試套件，所以明講可用的只有 `py_compile`、`--list-only`（唯一真正無副作用）、`--setup`、`--debug`，並警告**其他 flag 都會動到線上 notebook**
+6. **Architecture** —— 需要跨檔案才看得懂的五件事：
+   - 三層 state：`index.list` 是真相、`add_source_*.txt` 是可重建的衍生帳、雲端 notebook 是**只 rename 不刪**的鏡像
+   - 每個入口都先 `chdir` 再把 `NOTEBOOKLM_HOME` 指到 `./.notebooklm/` —— 這才是「所有指令都對 cwd 敏感」的根因
+   - Managed vs Curated 只由 `index.list` 第 1 行是否為空決定
+   - `main()` 是一串互斥的 early-exit dispatch，落到底才是主上傳流程
+   - auth 自癒兩層：`run_command()` 嗅到 auth 失敗自動 `refresh_auth()` 重試一次；`--reauth` 是全樹主動推送
+7. **Dual-Account** —— 只寫 code 面：`NOTEBOOKLM_ACCOUNT` → `.account` marker → symlink 名稱的解析順序、`notebook_title_prefix()` 對 joshua 為空 / christine 為 `Joshua_`、**專案內的 `.notebooklm/` 綁定不跟著 `nbswitch` 走**。操作 SOP 仍指回 `NBLM_DUAL_ACCOUNT_SOP_20260610.md`
+8. **Companion Docs** 索引 —— 只列 git 追蹤的三份（`INDEX_LIST_SPEC.md`、`NBLM_DUAL_ACCOUNT_SOP`、`USING_COLAB_4WHISPER.md`），並註明 root 底下未追蹤的 `.md` 是 session 草稿、不是 spec
+
+另外：index.list 格式區塊原本寫的是舊的 4 欄無 header 版本，已改成 3 行 header + 5 欄（含 float index 手動插隊、`extra` 標記），並指明 `INDEX_LIST_SPEC.md` 在這些主題上**權威高於 CLAUDE.md**；補上漏掉的 `--reauth`、`whisper_via_ssh`；刪掉重複兩次的 `--reindex` 範例；Key Functions 表加註「不是全部，`grep -n "^def "` 有約 90 個」。
+
+## 兩件待你決定
+
+- **`~/.codex/config.toml` 和 `~/.gemini/settings.json` 都存在**。要把裡面可匯入的東西（MCP servers / slash commands / subagents / skills / instructions）搬進 Claude Code 的話，回 `/import` 我會先列清單，再用 `/import --yes=<digest>` 套用。我沒有去讀那兩個檔。
+- root 底下 `20260515_genesis_whisper_lessons_from_strategy_librarian.md` 與 `WHISPER_LESSONS_FROM_STRATEGY_LIBRARIAN_20260515.md` 內容高度重疊、且**兩份都未進 git**，所以我沒把它們寫進 Companion Docs。要留哪一份、要不要 commit？
+
+CLAUDE.md 我沒有 commit（你 working tree 還有未完成的腳本改動），只 commit 了 `prompt.history` / `response.history`。
+
+
+
+

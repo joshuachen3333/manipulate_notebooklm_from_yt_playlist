@@ -97,6 +97,17 @@ manipulate_notebooklm_from_yt_playlist --cleanup /Users/joshua/work/youtube_list
 `__Secure-1PSIDTS`；把舊快照拿去重放，Google 會**撤銷整個 session**，所有資料夾
 一起死，只能重新 `notebooklm login`。auth 的複製交給 `--reauth` 處理。
 
+**不要同時跑不同資料夾的 job。** 每個 job 啟動時把全域 auth 複製一份到自己的
+`.notebooklm/`，之後各自輪替 cookie；誰最後輪替，其他人手上那份（含全域那份）
+就作廢了。症狀就是：先跑的那個一路跑下去，後開的那個一啟動就叫你 `notebooklm login`。
+**同一個資料夾**開多個終端機是安全的（共用同一份 auth，靠 `add_source_working.lock`
+協調索引）—— 不安全的是**不同資料夾**並行。
+
+**playlist 標題會被正規化，「台」和「臺」會撞在一起。** 資料夾名與 notebook 名都
+走 opencc 簡→繁，所以「台語漢字學」和「臺語漢字學」會落到同一個資料夾、同一本
+notebook，兩邊的 `index.list` 互相覆寫。標題只差異體字的兩條 playlist，要手動
+改 `index.list` 第 3 行給它們不同的名字。
+
 **sweep 跑到一半 auth 死掉**：腳本會自動重推 global auth 並重試該資料夾一次
 （全 sweep 上限 10 次）；若 global 本身已死，連續 3 次失敗後會**中止整個 sweep**
 並提示重新登入，不會空轉剩下的兩百多個資料夾。

@@ -108,11 +108,16 @@ python3 manipulate_notebooklm_from_yt_playlist.py --colab-url https://xxxxx.grad
 # Debug mode (shows extra diagnostic output for Colab connection issues)
 python3 manipulate_notebooklm_from_yt_playlist.py --debug --colab-url https://xxxxx.gradio.live "https://..."
 
-# Multi-session: run multiple terminals in parallel (auto-coordinates)
+# Multi-session: several terminals on the SAME folder (auto-coordinates via
+# add_source_working.lock). Safe — they share that folder's single .notebooklm/.
 # Terminal 1 (picks first pending video)
 python3 manipulate_notebooklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
 # Terminal 2 (auto-skips videos being processed, picks next available)
 python3 manipulate_notebooklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
+# NOT safe: concurrent runs in DIFFERENT folders. Each holds its own copy of
+# storage_state.json, notebooklm-py >= 0.4 rotates __Secure-1PSIDTS on use, and
+# whichever rotates last revokes every other copy (including the global one).
+# Run different folders sequentially. See "Storage layout changed" above.
 
 # Full auto: setup folder + notebook + index + reindex + upload (one command)
 python3 manipulate_notebooklm_from_yt_playlist.py --auto "https://..."

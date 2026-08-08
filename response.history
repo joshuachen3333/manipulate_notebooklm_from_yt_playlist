@@ -655,3 +655,14 @@ but that's exactly what I want. so tks
 
 
 
+##     2026-08-08 13:31 CST
+
+###    User Prompt
+為什麼有個正在跑, 而第二個卻要我login?
+
+###    result
+原因是 cookie 輪替：正在跑的 job 用的是啟動當下複製到自己 .notebooklm/ 的副本（還活著），新開的 job 複製的是全域那份，而全域那份已經被前面跑的 job 輪替掉、被 Google 作廢。同一資料夾多終端安全（共用一份 auth + lock 協調），不同資料夾並行不安全。查的過程發現更嚴重的事：opencc 簡→繁把「台」轉成「臺」，PLH1v_wCmILkq-9QrfL7jWiRPoPDHOtstk（台語漢字學, 11支）與 PLH1v_wCmILkqdy3rVsg5nIgptjbdKVCSa（臺語漢字學, 120支）因此共用同一個資料夾與同一本 notebook 54ec7b45，兩個 --auto 同時寫同一份 index.list，120 筆被 11 筆覆寫。所幸 11 支那條的 process 已結束、且沒有成功上傳任何來源（add_source_ok 唯一那筆屬於 120 支那條），剩下的 job 會把 index.list 寫回 120 筆，不需要殺任何東西。文件已更新：CLAUDE.md 修正 multi-session 說明（同資料夾安全／跨資料夾不安全），daily_usage.md 補上並行禁令與台臺撞名陷阱。
+
+
+
+

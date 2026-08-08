@@ -1156,3 +1156,16 @@ manipulate_notebooklm_from_yt_playlist --update -v    (regular update)
 
 
 
+##     2026-08-08 13:30 CST
+
+###    User Prompt
+為什麼有個正在跑, 而第二個卻要我login?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 問為何一個 --auto 正在跑、第二個卻被要求 login
+- Diff: 答：cookie 輪替 —— 正在跑的 job 用的是啟動時複製到自己 .notebooklm/ 的副本（還活著），新 job 複製的全域那份已被前面的 job 輪替作廢。連帶查出更嚴重的問題：opencc s2t 把「台」轉成「臺」，導致 PLH1v_wCmILkq-9QrfL7jWiRPoPDHOtstk（台語漢字學, 11 支）與 PLH1v_wCmILkqdy3rVsg5nIgptjbdKVCSa（臺語漢字學, 120 支）共用同一個資料夾 臺語漢字學/ 與同一本 notebook 54ec7b45，兩個 --auto 同時寫同一份 index.list，120 筆已被 11 筆覆寫
+
+
+
+

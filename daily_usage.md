@@ -113,6 +113,92 @@ prompt 裡的詞彙吐進聽不清楚的段落，所以全域那句放任何學�
 
 ---
 
+## Auth 壞掉：先判斷「哪一份還活著」，再決定怎麼救
+
+### 為什麼會壞
+
+notebooklm-py 0.4+ 每次跟 Google 說話都會輪替 `__Secure-1PSIDTS`。輪替之後，
+**所有其他副本（含 global）當場作廢** —— Google 的防重放機制會拒絕舊值。
+
+關鍵是：**唯讀指令也算數。** `notebooklm source list`、`source fulltext`、
+`notebooklm list` 全都會輪替。不是只有上傳才危險，在某個資料夾底下「看一下有
+哪些來源」就足以把其他兩百多個資料夾的 auth 全部弄死。
+
+典型症狀：某個資料夾好好的，隔壁資料夾一啟動就叫你 `notebooklm login`。
+
+> 額外陷阱：`notebooklm source list --json` 在 auth 過期時會回**空的 sources
+> 陣列**而不是報錯，看起來像「這本 notebook 是空的」。不加 `--json` 跑一次才
+> 會看到真正的錯誤訊息。`notebooklm status` 讀的是本機 context，過期也照印，
+> 不能拿來當 auth 健康檢查。
+
+### 診斷：比對 `__Secure-1PSIDTS`
+
+在放 playlist 的母目錄跑，不會發出任何網路請求：
+
+```bash
+python3 - <<'EOF'
+import json, glob, pathlib
+paths = [pathlib.Path.home() / ".notebooklm/profiles/default/storage_state.json"]
+paths += [pathlib.Path(p) for p in glob.glob("**/.notebooklm/profiles/default/storage_state.json", recursive=True)]
+rows = []
+for p in paths:
+    try:
+        d = json.loads(p.read_text())
+    except Exception:
+        continue
+    v = next((c["value"] for c in d.get("cookies", []) if c["name"] == "__Secure-1PSIDTS"), "<none>")
+    rows.append((str(p).replace(str(pathlib.Path.home()), "~"), v, p.stat().st_mtime))
+newest = max(r[2] for r in rows)
+live = {r[1] for r in rows if r[2] == newest}
+for path, v, _ in sorted(rows, key=lambda r: -r[2]):
+    print(f"{'CURRENT' if v in live else 'STALE  '}  ...{v[-12:]}  {path}")
+EOF
+```
+
+輸出長這樣（2026-08-08 實際案例）：
+
+```
+CURRENT  ...LJJaNILqsxAA  臺語漢字學/.notebooklm/...      ← 最後被用到的
+STALE    ...yQTPzAllOBAA  ~/.notebooklm/...
+STALE    ...yQTPzAllOBAA  台語漢字學短篇/.notebooklm/...
+```
+
+**最新 mtime 的那份就是 Google 目前接受的那份**，其餘一律作廢。
+
+### 修復 A：把還活著的那份提升回 global（不用開瀏覽器）
+
+`--reauth` 的方向是 global → 各資料夾。如果作廢的剛好是 global，直接 `--reauth`
+只會把死的推下去、全部一起死。要先把活的那份補回 global：
+
+```bash
+# 先確定沒有 job 在跑
+ps aux | grep manipulate_notebooklm | grep -v grep
+
+cp ~/.notebooklm/profiles/default/storage_state.json{,.bak}
+cp <CURRENT那份的路徑> ~/.notebooklm/profiles/default/storage_state.json
+manipulate_notebooklm_from_yt_playlist --reauth .
+```
+
+這跟「不要手動複製 storage_state.json」那條**不衝突** —— 那條講的是在 session
+活著的時候複製**舊快照**去重放。這裡沒有 job 在跑，而且複製的是 Google 唯一
+接受的那份，方向相反。失敗也不會比現在更糟。
+
+**2026-08-08 實測有效**，省掉一次瀏覽器登入。
+
+### 修復 B：A 失敗就走正規路
+
+```bash
+notebooklm login
+manipulate_notebooklm_from_yt_playlist --reauth /Users/joshua/work/youtube_list
+```
+
+### 預防
+
+跑 sweep 之前先 `--reauth`，讓所有副本從同一份出發。**不要在 sweep 跑的時候
+去別的資料夾下唯讀指令**查東西 —— 那會當場把正在跑的那個弄死。
+
+---
+
 ## 改資料夾／notebook 名稱
 
 `index.list` **第 3 行**是唯一真相來源：
@@ -138,11 +224,14 @@ prompt 裡的詞彙吐進聽不清楚的段落，所以全域那句放任何學�
 
 **不要手動複製 `storage_state.json`。** notebooklm-py 0.4+ 每次使用都會輪替
 `__Secure-1PSIDTS`；把舊快照拿去重放，Google 會**撤銷整個 session**，所有資料夾
-一起死，只能重新 `notebooklm login`。auth 的複製交給 `--reauth` 處理。
+一起死。auth 的複製交給 `--reauth` 處理。唯一的例外（把還活著的那份提升回 global）
+見上面〈Auth 壞掉〉。
 
-**不要同時跑不同資料夾的 job。** 每個 job 啟動時把全域 auth 複製一份到自己的
-`.notebooklm/`，之後各自輪替 cookie；誰最後輪替，其他人手上那份（含全域那份）
-就作廢了。症狀就是：先跑的那個一路跑下去，後開的那個一啟動就叫你 `notebooklm login`。
+**不要同時跑不同資料夾的 job，唯讀指令也算。** 每個 job 啟動時把全域 auth 複製
+一份到自己的 `.notebooklm/`，之後各自輪替 cookie；誰最後輪替，其他人手上那份
+（含全域那份）就作廢了。症狀就是：先跑的那個一路跑下去，後開的那個一啟動就叫你
+`notebooklm login`。**連 `source list` / `source fulltext` 這種唯讀指令都會輪替**
+—— 在別的資料夾「看一下」就足以弄死正在跑的那個。
 **同一個資料夾**開多個終端機是安全的（共用同一份 auth，靠 `add_source_working.lock`
 協調索引）—— 不安全的是**不同資料夾**並行。
 

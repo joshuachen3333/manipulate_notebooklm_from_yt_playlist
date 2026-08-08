@@ -1355,3 +1355,30 @@ I used to run many sessions of the manipulate,,, --update, why not now?
 
 
 
+##     2026-08-08 17:44 CST
+
+###    User Prompt
+at /Users/joshua/work/youtube_list/台語漢字學/陳世明老師, can I run --update?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問在陳世明老師母目錄跑 --update 是否安全
+- Diff: 評估中：需確認 global auth、短篇資料夾 auth 過期、台/臺 改名碰撞是否會重演、s2tw 切換後 --auto 會不會觸發改名
+
+
+
+
+##     2026-08-08 17:47 CST
+
+###    User Prompt
+把這個 reauth 場景也記錄下來 (*.md)
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求把 reauth 診斷與修復場景寫進文件
+- Diff: 將「唯讀指令也會輪替 cookie → 其他副本作廢」與「比對 __Secure-1PSIDTS 判斷哪份還活著 → local 提升回 global」寫入 daily_usage.md + CLAUDE.md
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/daily_usage.md`
+
+
+
+

@@ -260,6 +260,19 @@ When adding a mode, place it in that chain and remember it must set up
   `.notebooklm/` if newer) and retries **once**.
 - `--reauth` does that push proactively across every folder in a tree.
 
+**Both push global → local, which is the wrong direction when *global* is the
+dead copy.** Every `notebooklm` call rotates `__Secure-1PSIDTS` and invalidates
+every other copy, including global — and **read-only calls count**: a single
+`source list` or `source fulltext` in one folder revokes the other 269 and the
+global. So the freshest local `.notebooklm/` is often the only live credential,
+and `--reauth` would overwrite it with a dead one.
+
+Diagnose without any network call by comparing `__Secure-1PSIDTS` across
+`~/.notebooklm/` and every `*/.notebooklm/` — newest mtime wins, everything
+with a different value is revoked. Recovery is to promote that live copy back
+to global *first*, then `--reauth`. Full operator procedure with the diagnostic
+script: `daily_usage.md` → 〈Auth 壞掉〉.
+
 Function inventory: `grep -n "^def " manipulate_notebooklm_from_yt_playlist.py`.
 
 ## Dual-Account (Christine / Joshua)
@@ -293,6 +306,11 @@ of their internals that reference the old flat path need updating.
 **Never copy a `storage_state.json` around while a session is live.** 0.8.0 rotates
 `__Secure-1PSIDTS` on use; replaying a divergent snapshot makes Google revoke the
 whole session and forces a fresh `notebooklm login`.
+
+The one sanctioned copy is the reverse direction — promoting the *live* local
+copy back to global when global is the revoked one, with no job running. That
+is not a replay: it installs the value Google currently accepts. Verified in
+practice 2026-08-08; procedure in `daily_usage.md` → 〈Auth 壞掉〉.
 
 ## Flow / SOP
 
@@ -784,6 +802,21 @@ ssh user@host "yt-dlp --help"
 
 **SSHFS/SSH permission denied**: Ensure the remote path is writable. Test with `ssh user@host "touch /genesis/tmp/test && rm /genesis/tmp/test"`.
 
-**Auth expired everywhere / `--update` fails across all folders**: `notebooklm login`, then `--reauth <parent dir>` to push the fresh `storage_state.json` into every folder's local `.notebooklm/`.
+**Auth expired everywhere / `--update` fails across all folders**: don't reach for
+`notebooklm login` first — check whether some folder still holds a live credential.
+Compare `__Secure-1PSIDTS` across `~/.notebooklm/` and every `*/.notebooklm/`
+(no network call); the newest-mtime value is the live one and everything else is
+revoked. If a *local* copy is the live one, promote it to global, then
+`--reauth <parent dir>`. Only if nothing is live do you need `notebooklm login`
+followed by `--reauth`. Diagnostic script and full procedure: `daily_usage.md`
+→ 〈Auth 壞掉〉.
+
+**One folder works, the next says "login" / a notebook looks empty**: the same
+rotation, seen from the other side — something (even a read-only `source list`)
+ran in another folder and revoked this one. Note `source list --json` returns an
+empty `sources` array instead of an error when auth is expired, so an
+"empty notebook" is not evidence the notebook is empty; re-run without `--json`
+to see the real error. `notebooklm status` reads local context and prints
+happily even when revoked — it is not an auth check.
 
 **Wrong notebook got touched**: The binding is `index.list` line 2 + the folder's `.notebooklm/`, not a global setting. Check you were in the right cwd; `--bind-notebook <url>` overwrites line 2 unconditionally.

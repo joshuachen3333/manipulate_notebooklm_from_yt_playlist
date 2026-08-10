@@ -1253,3 +1253,77 @@ manipulate_notebooklm_from_yt_playlist --update .   # 讓 preflight 順手把 au
 
 
 
+##     2026-08-11 01:06 CST
+
+###    User Prompt
+Nothing to rename. All matched sources are already correct.
+Tracking files synced: add_source_ok.txt (103), add_source_video2txt.txt (3)
+Remaining: 1 videos not yet in notebook (use -r to upload)
+
+Progress: 103 YouTube + 3 Whisper = 106 completed, 1 remaining
+
+[1/1] #107: https://www.youtube.com/watch?v=XDJidg6s2DU
+  Notebook: Joshua_Algorithmic Trading With Python
+  Source:   NA
+  Adding source... FAILED: 00:54:11 ERROR [notebooklm._rpc_executor] [req=5ae23245] RPC ADD_SOURCE failed after 2.024s: RPCError rpc_code=9
+
+  Cleaned up 1 error source(s) from cloud
+  RETRY [#107]: #1/2, waiting 1s...
+  Adding source... FAILED: 00:54:52 ERROR [notebooklm._rpc_executor] [req=a165da09] RPC ADD_SOURCE failed after 1.889s: RPCError rpc_code=9
+
+  Cleaned up 1 error source(s) from cloud
+  RETRY [#107]: #2/2, waiting 2s...
+  Adding source... Extracting cookies from chrome
+Extracted 2558 cookies from chrome
+[youtube] Extracting URL: https://www.youtube.com/watch?v=XDJidg6s2DU
+....
+
+###    result
+這是我的 bug，兩個疊在一起。
+
+## Bug 1：私人影片被當成 auth 失效
+
+`_is_auth_failure()` 原本是「泛用錯誤字 AND 模糊 auth 字」的組合，而它比對的是**整個資料夾的 log**（含 yt-dlp、whisper 輸出）。yt-dlp 對私人影片的訊息是：
+
+> Private video. **Sign in** if you've been granted access... Use --**cookies**-from-browser or --cookies for the **authentication**.
+
+三個關鍵字全中。於是一支私人影片 = 一次 270 資料夾 re-auth，還吃掉 `MAX_SWEEP_REAUTHS` 的一格。
+
+改成只比對 notebooklm **自己會印**的字串（從套件原始碼抓出來的），並排除它的成功訊息（`Authentication saved to`、`Authentication tokens obtained successfully` 也含 authentication）。
+
+單純收緊會失去一個既有涵蓋 —— session 死掉時有些路徑只印 `Failed to select notebook`，沒有 auth 字樣。所以 mid-sweep 改成**兩段式**：
+
+```
+字串嗅探（便宜，決定「值不值得問」）
+      ↓
+check_auth_valid()（一次真實網路呼叫，權威）
+      ↓
+才動 resolve_live_auth + run_reauth
+```
+
+## Bug 2：那支影片根本不該進到重試迴圈
+
+`is_unavailable_video_title()` 這個防護早就存在也掛上了，但那筆的標題是 `"NA"` —— **yt-dlp 的 `--print` 在 title 欄位缺失時會印字面 `NA`**，而在 playlist 列表裡「抓不到 title」就等於「這支不可用」。
+
+結果它燒掉 2 次重試 ＋ 一整輪 SSH→本機 whisper 下載才死，而且**每次 sweep 都會再燒一次**。
+
+全樹量測：修好之後 **25 筆會自動跳過**（20 筆 `[Private video]`、5 筆 `NA`）。
+
+## 驗證
+
+| 輸入 | 結果 |
+|---|---|
+| 你貼的私人影片 log | `False` ✓ |
+| 三種真 auth 錯誤 | 全部 `True` ✓ |
+| notebooklm 成功訊息 | 全部 `False` ✓ |
+| `"NASA 影片"` 不被 `na` 規則誤傷 | ✓ |
+
+---
+
+順帶說明你 log 最後那兩行是**修正前的行為**：preflight 說「global is current」是對的（auth 其實好好的），然後照樣 re-auth 了 270 個。修完之後那條路徑會被 `check_auth_valid()` 擋下來，根本不會走到。
+
+`Algorithmic_Trading_With_Python` 那筆不用你手動改 index.list —— 下次跑它會自己進 skip 清單。
+
+
+
+

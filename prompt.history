@@ -1571,3 +1571,19 @@ Re-authenticated 270 folder(s) — 私人影片 XDJidg6s2DU 觸發誤判
 
 
 
+##     2026-08-11 01:17 CST
+
+###    User Prompt
+現在可以跑你的小平行測試
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 授權執行小平行測試
+- Diff: 三臂受控實驗（--reindex，rename-only）：對照單一資料夾不設變數→輪替 PuLJZbDosEAA→q55zavasfEAA；陰性 3 個平行不設變數→NTU 那個輪替成 VdquXzRerEAA、其餘三份中毒（但三個都 rc=0，毒下次呼叫才發作）；實驗 3 個平行設變數→值完全不變、全部一致。過程發現前兩次結果無效（60s 節流窗口造成假陰性），加入 mtime>75s 等待後重做。新增 --parallel 旗標（設 NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1，--update 不該用）。另修 daily_usage.md 診斷腳本只 glob profiles/ 會漏掉扁平 layout 的 bug：從 46 個修正為掃到 271 個
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/daily_usage.md`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/CLAUDE.md`
+
+
+
+

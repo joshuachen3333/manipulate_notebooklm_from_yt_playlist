@@ -5095,6 +5095,17 @@ Examples:
              "Traverses PATH (default: current directory)."
     )
     parser.add_argument(
+        "--parallel",
+        action="store_true",
+        dest="parallel",
+        help="Make this run safe to execute alongside runs in OTHER folders, by "
+             "setting NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 so notebooklm stops rotating "
+             "__Secure-1PSIDTS. Rotation is anti-replay: without this, whichever folder "
+             "rotates last silently revokes every other copy. Not needed (and not wanted) "
+             "for --update, which is sequential — there the rotation is useful keepalive. "
+             "Cost: no keepalive refresh, so the session runs to its natural expiry."
+    )
+    parser.add_argument(
         "--auto-update-deps",
         action="store_true",
         dest="auto_update_deps",
@@ -5136,6 +5147,18 @@ def main():
     atexit.register(print_exit_timestamp)
 
     args = parse_args()
+
+    # --parallel: suppress __Secure-1PSIDTS rotation for this run so concurrent
+    # runs in different folders stop revoking each other. Measured with three
+    # folders running --reindex at once, throttle window cleared: without it one
+    # folder rotated and the other two were left holding a dead value (they still
+    # exited 0 — the poisoning only bites on the *next* invocation, which is why
+    # this reads as "the second terminal asks me to log in"). With it, all three
+    # finished and every copy still matched.
+    if getattr(args, "parallel", False):
+        os.environ["NOTEBOOKLM_DISABLE_KEEPALIVE_POKE"] = "1"
+        print("Parallel mode: cookie rotation disabled for this run "
+              "(safe alongside other folders; no keepalive refresh).")
 
     # --update: traverse directory tree and run --auto for each playlist folder
     if args.update:

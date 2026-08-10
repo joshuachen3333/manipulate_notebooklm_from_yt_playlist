@@ -144,10 +144,18 @@ notebooklm-py 0.4+ 每次跟 Google 說話都會輪替 `__Secure-1PSIDTS`。輪�
 ```bash
 python3 - <<'EOF'
 import json, glob, pathlib
-paths = [pathlib.Path.home() / ".notebooklm/profiles/default/storage_state.json"]
-paths += [pathlib.Path(p) for p in glob.glob("**/.notebooklm/profiles/default/storage_state.json", recursive=True)]
-rows = []
+# 兩種 layout 都要掃：0.4+ 是 profiles/<name>/，舊的是扁平放在 .notebooklm/ 底下。
+# 只掃 profiles/ 會漏掉還沒被 CLI 自動遷移的資料夾，給出「全部一致」的假象。
+pats = ["**/.notebooklm/profiles/*/storage_state.json", "**/.notebooklm/storage_state.json"]
+paths = [pathlib.Path.home() / ".notebooklm/profiles/default/storage_state.json",
+         pathlib.Path.home() / ".notebooklm/storage_state.json"]
+for pat in pats:
+    paths += [pathlib.Path(p) for p in glob.glob(pat, recursive=True)]
+rows, seen = [], set()
 for p in paths:
+    if not p.exists() or p.resolve() in seen:
+        continue
+    seen.add(p.resolve())
     try:
         d = json.loads(p.read_text())
     except Exception:
@@ -267,7 +275,16 @@ manipulate_notebooklm_from_yt_playlist --reauth /Users/joshua/work/youtube_list
 一起死。auth 的複製交給 `--reauth` 處理。唯一的例外（把還活著的那份提升回 global）
 見上面〈Auth 壞掉〉。
 
-**不要同時跑不同資料夾的 job，唯讀指令也算。** 每個 job 啟動時把全域 auth 複製
+**要同時跑不同資料夾，加 `--parallel`。** 它設 `NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1`
+關掉 cookie 輪替 —— 輪替是防重放的，誰最後輪替就把其他所有副本作廢。三個資料夾
+同時跑 `--reindex` 實測（2026-08-11）：不加旗標時一個輪替、另外兩個手上的值當場
+變死（但當下三個都 rc=0，**毒是下一次呼叫才發作**，這就是「後開的那個一啟動就
+叫你 login」的成因）；加了旗標三個都跑完、所有副本仍然一致。
+
+代價是失去 keepalive 續命，session 走自然壽命。`--update` **不要**加 —— 它本來
+就是循序的，那裡的輪替是有益的。
+
+**不加 `--parallel` 就不要同時跑不同資料夾的 job，唯讀指令也算。** 每個 job 啟動時把全域 auth 複製
 一份到自己的 `.notebooklm/`，之後各自輪替 cookie；誰最後輪替，其他人手上那份
 （含全域那份）就作廢了。症狀就是：先跑的那個一路跑下去，後開的那個一啟動就叫你
 `notebooklm login`。**連 `source list` / `source fulltext` 這種唯讀指令都會輪替**

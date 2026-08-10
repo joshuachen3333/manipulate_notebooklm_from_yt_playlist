@@ -996,3 +996,107 @@ L3 除了「專用 profile」還支援 **CDP attach**（`NOTEBOOKLM_HEADLESS_REA
 
 
 
+##     2026-08-11 00:37 CST
+
+###    User Prompt
+ˇ要不要佈 270 個 symlink，以及 NOTEBOOKLM_HEADLESS_REAUTH=1 要不要寫進腳本 
+中文詳述
+
+###    result
+兩件事的性質完全不同 —— 一個是「把路打通」，另一個是「准許自動走那條路」。分開講。
+
+## 決策一：270 個 symlink
+
+### 它實際在做什麼
+
+**不是複製憑證，是指路。** 實體只有一份，在 `~/.notebooklm-christine/browser_profile`（44M）。270 個 symlink 全部指向它。
+
+之所以需要，是因為套件解析 browser_profile 的路徑**一律相對於 `NOTEBOOKLM_HOME`**（`paths.py:get_browser_profile_dir`，沒有任何 env 可以覆寫），而這支腳本的核心設計就是把 `NOTEBOOKLM_HOME` 指向每個資料夾自己的 `.notebooklm/`。所以 L3 在 global 看得到 profile、在資料夾裡看不到 —— 而真正跑 sweep 的是後者。
+
+### 成本與可逆性
+
+0 bytes × 270。要撤掉就 `find . -name browser_profile -type l -delete`，一行。
+
+### 安全面：這一步**不增加任何暴露**
+
+憑證本來就在磁碟上那個位置。symlink 只是讓「已經在那裡的東西」被找到。而且我驗證過套件的 `browser_profile_is_owned()` 對指向 home 之外的 symlink 回傳 **False** —— 意思是套件永遠不會把它當自有目錄刪掉。
+
+### 但有兩個實質問題
+
+**1. 併發。** L3 的 single-flight 鎖是 `threading.Lock`，**只在同一個 process 內有效**。你的 SOP 說「同一個資料夾開多個終端機是安全的」—— 那是兩個獨立 process。如果它們同時觸發 L3，就會有兩個 headless Chrome 搶同一個 profile 的 SingletonLock，其中一個失敗。
+
+不會壞資料（L3 失敗是誠實回傳 FAILED），但會噪音。`--update` 是循序跑的，不受影響。
+
+**2. 靜態佈署會過期。** 之後每新增一條 playlist，那個新資料夾就沒有 symlink，你得記得補。而「記得補」這種事三個月後就沒人記得了 —— 這次 browser_profile 消失就是這樣來的。
+
+### 所以我不建議靜態佈 270 個
+
+**建議讓腳本自己維護。** 腳本有 10 處設 `NOTEBOOKLM_HOME`，但所有 notebooklm 呼叫都經過 `run_command()` 這個唯一咽喉點。在那裡加一個帶 memo 的 `ensure_browser_profile_link()`：
+
+- 新資料夾自動就有，不用記得
+- 檢查成本是一次 `is_symlink()`，微秒等級
+- 邏輯集中在一個地方，不是散在檔案系統的 270 個副作用
+
+一次性佈 270 個當然也可以順手做（讓現有的立刻生效），但**真正的修復是那個 helper**，否則半年後又會退化。
+
+---
+
+## 決策二：`NOTEBOOKLM_HEADLESS_REAUTH=1` 寫進腳本
+
+這一步才是真的改變行為，而且套件作者刻意把它設成預設關閉。
+
+### 套件自己怎麼說
+
+> Headless re-auth is EXPLICIT by default... L3 never auto-fires by default.
+>
+> **SECURITY — local-unattended-only.** The persistent browser profile is an **account-equivalent credential**: a live Google session, longer-lived than `storage_state.json`. L3 must NOT become the auth story for a remote / hosted MCP server — it is for a **local, unattended agent/worker on the operator's own machine**.
+
+你的 sweep 完全落在它認可的情境裡：本機、你自己的機器、無人值守、跑幾小時。這不是在鑽漏洞，是正好命中設計目標。
+
+### 開了之後的實際差別
+
+| | 現在 | 開了之後 |
+|---|---|---|
+| 被撤銷時 | 停下來叫你 `notebooklm login` | 自己從 profile 重新取得，繼續跑 |
+| 270 資料夾的 sweep | 中途停住等你 | 跑完 |
+
+### 三件我必須誠實講的
+
+**1. 它會讓失敗變安靜。** 現在 auth 死掉你馬上知道；自動復原之後你不會。壞處是**當 profile 哪天也死了，你會更晚才發現** —— 就像這次，那份 profile 從 5 月放到 8 月才被發現是死的，因為 0.3.0 時代根本用不到它。
+
+這個副作用有解：L3 觸發時印一行明顯的 log。我會加。
+
+**2. 它擴大了自動化的權限半徑。** 原本自動流程手上只有 `storage_state`（比較短命、比較侷限）；開了之後它能動用 browser profile，那是帳號等價憑證。差別在於：如果腳本哪天有 bug 或被誤用，它能造成的損害上限變高了。
+
+**3. 範圍控制很重要。** 寫進 `~/.zshrc` = 你**所有** notebooklm 操作都啟用，包含你手動打的指令。寫進腳本 = 只有這支腳本的操作啟用。**我強烈建議後者** —— 手動操作時你人就在旁邊，本來就不需要無人值守復原。
+
+---
+
+## 還有一個你該先考慮的替代方案
+
+L3 除了「專用 profile」，還支援 **CDP attach**（`NOTEBOOKLM_HEADLESS_REAUTH_CDP_URL`）：接到你**平常在用的那個 Chrome**，拿它當憑證來源。套件文件明講這是「dedicated profile 會腐化」的緩解方案。
+
+| | 專用 profile | CDP attach |
+|---|---|---|
+| 會不會腐化 | **會** —— 這次就死了 | 不會，你天天在用 |
+| 需要什麼 | 一次 `notebooklm login` | Chrome 開著 remote debugging port |
+| 無人值守 | ✓ 完全 | ✗ Chrome 得開著 |
+| 適合 | 跑幾小時的 sweep | 你在電腦前的時候 |
+
+長期看 CDP 那條更不會壞，但它跟「無人值守跑 270 個資料夾」的前提衝突。**我建議先走專用 profile，把 CDP 當備案** —— 如果三個月後 profile 又腐化，那時再改。
+
+---
+
+## 我的具體建議
+
+1. **腳本加 `ensure_browser_profile_link()`**，掛在 `run_command()`，順手把現有 270 個補上
+2. **`NOTEBOOKLM_HEADLESS_REAUTH=1` 寫進腳本**，不寫 `~/.zshrc`
+3. **L3 觸發時印一行明顯的 log**，抵銷「變安靜」的副作用
+4. 然後你跑一次 `notebooklm login`（christine），把 profile 灌活
+5. 把「profile 也會腐化」寫進 `daily_usage.md`，附上今天用的那個 readiness 探測指令
+
+第 2 項是唯一需要你點頭的 —— 其餘都是純工程，出事可逆。要我動手就說。
+
+
+
+

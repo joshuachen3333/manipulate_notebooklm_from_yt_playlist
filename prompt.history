@@ -1498,3 +1498,17 @@ let's move
 
 
 
+##     2026-08-11 00:38 CST
+
+###    User Prompt
+要不要佈 270 個 symlink，以及 NOTEBOOKLM_HEADLESS_REAUTH=1 要不要寫進腳本 
+中文詳述
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求詳述兩項決策：270 symlink 與 NOTEBOOKLM_HEADLESS_REAUTH=1 是否入腳本
+- Diff: 尚未動工，僅出具分析與建議。關鍵新發現：(a) L3 single-flight 鎖是 threading.Lock，跨 process 無效，同資料夾多終端機同時觸發會搶 Chrome SingletonLock；(b) 靜態佈 270 symlink 會隨新資料夾退化，建議改為在 run_command() 唯一咽喉點掛帶 memo 的 ensure_browser_profile_link()；(c) 建議 env 只寫進腳本不寫 ~/.zshrc（手動操作不需無人值守復原），並在 L3 觸發時印 log 抵銷「失敗變安靜」；(d) CDP attach 列為 profile 腐化後的備案
+
+
+
+

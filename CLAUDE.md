@@ -903,6 +903,7 @@ notebooklm source rename <source_id> "New Title"
 | File | Read it when |
 |------|--------------|
 | `INDEX_LIST_SPEC.md` | Touching index.list parsing/writing, notebook binding, folder/title standardization, or Curated↔Managed. **Authoritative over this file** on those topics. |
+| `PARALLEL_RUNS.md` | Running several folders at once. The `--parallel` rules, the three-arm measurement behind them, and why the GPU caps useful concurrency at 2-3. |
 | `NBLM_DUAL_ACCOUNT_SOP_20260610.md` | Switching Google accounts, `nbswitch`/`nbwhich`, quota exhaustion on one account. |
 | `USING_COLAB_4WHISPER.md` | Setting up the Colab T4 Gradio endpoint for `--colab-url`. |
 

@@ -1600,3 +1600,19 @@ Re-authenticated 270 folder(s) — 私人影片 XDJidg6s2DU 觸發誤判
 
 
 
+##     2026-08-11 01:31 CST
+
+###    User Prompt
+write this down (to a .md)
+❯ 到底能不能平行跑多個?how?
+能。每一個都加 --parallel。（四條規則、為什麼需要旗標、實務天花板 —— 全文見對話）
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求把平行執行的說明寫成 .md
+- Diff: 新增 PARALLEL_RUNS.md（四條規則、原理、三臂實測數據含 60s 節流假陰性的坑、GPU 並行天花板 2–3）；daily_usage.md 原本那段長敘述收斂為指標避免雙份文件分歧；CLAUDE.md Companion Docs 表登記新檔
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/PARALLEL_RUNS.md`
+
+
+
+

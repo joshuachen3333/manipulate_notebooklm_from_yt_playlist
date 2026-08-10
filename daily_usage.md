@@ -275,14 +275,8 @@ manipulate_notebooklm_from_yt_playlist --reauth /Users/joshua/work/youtube_list
 一起死。auth 的複製交給 `--reauth` 處理。唯一的例外（把還活著的那份提升回 global）
 見上面〈Auth 壞掉〉。
 
-**要同時跑不同資料夾，加 `--parallel`。** 它設 `NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1`
-關掉 cookie 輪替 —— 輪替是防重放的，誰最後輪替就把其他所有副本作廢。三個資料夾
-同時跑 `--reindex` 實測（2026-08-11）：不加旗標時一個輪替、另外兩個手上的值當場
-變死（但當下三個都 rc=0，**毒是下一次呼叫才發作**，這就是「後開的那個一啟動就
-叫你 login」的成因）；加了旗標三個都跑完、所有副本仍然一致。
-
-代價是失去 keepalive 續命，session 走自然壽命。`--update` **不要**加 —— 它本來
-就是循序的，那裡的輪替是有益的。
+**要同時跑不同資料夾，每一個都加 `--parallel`。** 漏掉一個就毀掉全部。完整規則、
+實測數據與並行度上限見 **`PARALLEL_RUNS.md`**。`--update` 不要加。
 
 **不加 `--parallel` 就不要同時跑不同資料夾的 job，唯讀指令也算。** 每個 job 啟動時把全域 auth 複製
 一份到自己的 `.notebooklm/`，之後各自輪替 cookie；誰最後輪替，其他人手上那份

@@ -1441,3 +1441,19 @@ whisper 有 carry_initial_prompt 選項 把它確實普遍套用
 
 
 
+##     2026-08-10 09:16 CST
+
+###    User Prompt
+全做
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 授權實作 --auto/--update 的兩項 preflight
+- Diff: 新增 resolve_live_auth()／collect_auth_copies()／read_rotating_cookie()：sweep 開頭與 mid-sweep 復原時比對 __Secure-1PSIDTS，必要時把活的 local 副本提升回 global（含備份）才往下推；refresh_auth() 加方向護欄（local 較新則拒絕覆蓋）。新增 check_dependency_health()：偵測 yt-dlp / yt-dlp-ejs 落後，預設只回報，--auto-update-deps 才升級 —— 關鍵發現是 yt-dlp 已是最新（2026.7.4），真正落後的是 yt-dlp-ejs 0.3.2 vs 需求 0.8.0，所以比對 yt-dlp 版本號抓不到問題。子程序以 NBLM_SWEEP_CHILD 環境變數跳過重複 preflight。commit 4afb77c
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/CLAUDE.md`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/daily_usage.md`
+
+
+
+

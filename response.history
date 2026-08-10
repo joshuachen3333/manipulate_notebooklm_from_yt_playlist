@@ -781,3 +781,218 @@ sweep 開頭（此時保證沒有 job 在跑）:
 
 
 
+##     2026-08-10 09:16 CST
+
+###    User Prompt
+全做
+
+###    result
+兩個都做完了。
+
+## #2 auth 方向判斷（主菜）
+
+新增 `resolve_live_auth()`，跑在 sweep 開頭與 mid-sweep 復原路徑上 —— 兩個時間點都保證沒有 job 在飛：
+
+```
+比對 global + 所有 */.notebooklm/ 的 __Secure-1PSIDTS
+├ global 就是最新     → 照舊往下推
+├ 某個 local 才是最新 → 先備份 global，把活的提升上去，才往下推
+└ 找不到任何副本      → 提示 notebooklm login
+```
+
+另外給 `refresh_auth()` 加了配套護欄：**local 的 mtime 嚴格新於 global 時拒絕覆蓋**。這是同一個錯誤的另一個入口 —— 它原本只比內容，內容不同就照抄，方向錯了也照抄。
+
+合成三副本樹測過三個情境：提升成功（含備份）、重跑冪等、global 本來就最新時不動作。`refresh_auth` 兩個方向也各測一次。
+
+## #1 依賴 preflight（偵測，不自動裝）
+
+實際跑起來的樣子：
+
+```
+  yt-dlp-ejs 0.3.2 — yt-dlp requires 0.8.0
+  Fix with: pip install -U yt-dlp-ejs
+  (or pass --auto-update-deps to let the sweep do it)
+```
+
+注意它**沒有**抱怨 yt-dlp —— 因為 2026.7.4 就是 PyPI 最新。這正是我昨天說的：你原本想要的那個檢查會回報「一切正常」然後什麼都不修。真正的依據是 yt-dlp 自己在 `jsc/_builtin/vendor/_info.py:VERSION` 宣告的需求版本，離線、精確。yt-dlp 本體對 PyPI 的比對是 best-effort，5 秒 timeout，離線也不擋。
+
+`--auto-update-deps` 是明確 opt-in 才會真的 pip 升級。
+
+## 子程序不重跑
+
+`run_update` 設 `NBLM_SWEEP_CHILD=1`，子程序繼承（Popen 沒帶 `env=`）。否則 270 個子程序會各自打一次 PyPI，更糟的是**在彼此輪替 cookie 的同時各自判斷「誰是活的」** —— 那會比不做還危險。
+
+---
+
+現在就能收的一件事：
+
+```bash
+pip install -U yt-dlp-ejs      # 0.3.2 → 0.8.0
+```
+
+不修的話下次 sweep 開頭會再唸你一次，然後照常跑（下載目前還是成功的，只是會噴警告）。
+
+
+
+
+##     2026-08-11 00:01 CST
+
+###    User Prompt
+let's move
+
+###    result
+環境全綠，可以開跑了。
+
+## 剛做完的收尾
+
+```
+yt-dlp-ejs   0.3.2 → 0.8.0
+preflight    "yt-dlp 2026.7.4 and solver are current"   problems: []
+實測抽取     rc=0，stderr 完全空白，0 個警告
+```
+
+你昨天貼的那三行 `[jsc:deno] Challenge solver ... not supported` 沒了。
+
+**auth 也是齊的** —— 270 份副本 + global 全部同一個值，`resolve_live_auth` 開跑時會直接回報 "global is current"，不會動任何東西。
+
+## 交給你跑
+
+分工照舊（sweep 你自己跑，我只負責程式正確）：
+
+```bash
+cd /Users/joshua/work/youtube_list/台語漢字學/陳世明老師
+manipulate_notebooklm_from_yt_playlist --update -v
+```
+
+短篇 11/11 秒過，然後進臺語漢字學的 74 支。**第一支 whisper 出來時看三件事**（`--carry_initial_prompt` 的首次實戰）：
+
+1. 第 3 段之後還是正體嗎
+2. 聲母／韻母對了嗎
+3. 有沒有 prompt 詞出現在音檔沒講的地方
+
+## 之後還躺著兩件
+
+**其他 268 個資料夾**：`--normalize-tw` 改了 index.list 標題，那 225 個改名還沒推上雲端 —— 要跑 `--reindex`。但同一趟 `--update` 也會讓 `text_back_to_video_effort` **第一次真的動起來**（`pasted_text` 那個 bug 修掉之前它從來沒找到過候選）。建議先挑一個資料夾試，不要直接開全樹。
+
+**手校回饋**：等你和隔壁 obe 校完，走 `--resync-text` / `--text-over-video`。短篇那本這輪只蓋得到 6 支（11 支原生匯入，本機只有 6 份稿）。
+
+
+
+
+##     2026-08-11 00:27 CST
+
+###    User Prompt
+為什麼最近, 常常要我重新 login (notebooklm login), 以前都是一兩個月才過期的
+
+###    result
+因為**它根本不是「過期」了 —— 是被「撤銷」了**。兩種死法，症狀一樣，成因完全不同。
+
+## 8/8 那次升級換掉了死法
+
+你原本跑 notebooklm-py **0.3.0**，那個版本不輪替 cookie。270 份 `storage_state.json` 副本可以並存，各用各的，只有 Google 那邊的自然壽命會到期 —— 就是你說的一兩個月。
+
+升到 **0.8.0** 之後，每次呼叫都會透過 `RotateCookies` 換發新的 `__Secure-1PSIDTS`（`keepalive.py`，同一份檔案 60 秒節流一次）。而輪替帶防重放：**只要任何一份副本輪替了，其餘 269 份加上 global 手上那個值當場作廢。**
+
+所以：
+
+| | 0.3.0 | 0.8.0 |
+|---|---|---|
+| 死因 | 自然過期 | 自然過期 **+ 被輪替撤銷** |
+| 週期 | 1–2 個月 | 隨便誰跑一次就換一輪 |
+
+你的自然壽命根本沒變。是多了一條快很多的死法，而且**「一個資料夾一份 auth」這個架構正好把它放大 270 倍** —— 這個設計當初假設副本可互換，0.4+ 之後它們變成互斥。
+
+## 但真正讓你「必須開瀏覽器」的是另一件事
+
+0.8.0 其實有三層自動復原，最深那層（L3）可以**從常駐瀏覽器 profile 免人工重新取得 cookie**，完全不用你開瀏覽器登入。它需要兩個條件：
+
+1. `NOTEBOOKLM_HEADLESS_REAUTH=1`（預設不會自動觸發）
+2. 該帳號的 home 底下要有 `browser_profile/`
+
+第 2 點就是問題：
+
+```
+~/.notebooklm → ~/.notebooklm-christine
+~/.notebooklm-christine/browser_profile     ← 沒有
+~/.notebooklm-joshua/browser_profile        ← 有
+```
+
+**你 270 個資料夾全部綁 christine**，而 christine 這邊沒有 browser_profile，所以 L3 對你實際在用的帳號是**結構性不可用的** —— 每次撤銷都只能落到最後一層「請執行 notebooklm login」。
+
+而 christine 的 browser_profile 並沒有不見，它被留在 6/10 雙帳號遷移的殘骸裡：
+
+```
+~/.notebooklm.backup.20260610/browser_profile   44M   最後修改 2026-05-13
+~/.notebooklm.new/browser_profile               15M   最後修改 2026-06-10
+```
+
+當初 `cp -R ~/.notebooklm ~/.notebooklm-christine` 搬了 storage_state，但 browser_profile 沒跟過去。**那次遷移在無聲中拿掉了「免人工復原」這條路**，只是 0.3.0 時代不輪替、很少需要復原，所以兩個月都沒人發現。
+
+## 我建議的順序
+
+1. **把 christine 的 browser_profile 接回去**，開 `NOTEBOOKLM_HEADLESS_REAUTH=1` 測一次。成功的話撤銷就自癒，你不用再開瀏覽器。⚠️ 那兩份 profile 都兩個月大了，裡面的 Google SSO session 可能也死了 —— 這是待驗證，不是保證。
+2. 昨天加的 preflight 已經擋掉**自傷**那一半（global 被死副本蓋掉）。
+3. sweep 期間不要去別的資料夾下唯讀指令 —— 那是最常見的自傷來源（我這週就幹了兩次）。
+4. `NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1` 可以整個關掉輪替。但**那個 poke 同時就是 keepalive** —— 關掉等於用「撤銷」換回「較快自然過期」，不是免費的。我不建議先動這個。
+
+要我幫你試第 1 項嗎？會複製一份 profile 到 christine home 並跑一次 headless 驗證（現在沒有 job 在跑，安全）。
+
+
+
+
+##     2026-08-11 00:33 CST
+
+###    User Prompt
+試第 1 項
+
+###    result
+測試結果是**明確的否定 —— 但很有價值**。
+
+```
+WARNING: landed off-host after navigation
+         (the persisted browser profile's Google session is likely expired)
+status: FAILED     耗時 12.6s
+storage_state 有被改寫: False        ← 誠實失敗，沒有動到你現在的 auth
+```
+
+Christine 那份 profile 的 Google session **已經死了**（2026-05-13 的東西，撐了三個月）。日期上 cookie 沒過期，但 session 本身失效了 —— 這正是為什麼 readiness 檢查刻意不聲稱「session 活著」，只有真的驅動瀏覽器才知道。
+
+## 但這次測試把路鋪好了
+
+三件事已經確認並就位：
+
+| | 狀態 |
+|---|---|
+| playwright | ✓ 已裝 |
+| christine 的 browser_profile 位置 | ✓ 已接回 `~/.notebooklm-christine/browser_profile` |
+| 資料夾層級 L3 可達性 | ✓ symlink 方案驗證通過（`available: True`，且 `owned: False` 套件不會刪它） |
+| profile 的 Google session | ✗ **過期，需要一次 login 重新灌** |
+
+第三項是我原本沒預期會成立的 —— 套件解析 profile 路徑一定相對於 `NOTEBOOKLM_HOME`，而腳本把它指向每個資料夾的 `.notebooklm/`。沒有 env 可以覆寫，但 symlink 可以，成本 0 bytes。
+
+## 關鍵是：**你下一次 login 不會白費**
+
+`notebooklm login` 會同時重新灌 `browser_profile` 和 `storage_state`。所以：
+
+```
+1. 先把 270 個資料夾的 browser_profile symlink 佈好      （我做，約 1 秒）
+2. 開 NOTEBOOKLM_HEADLESS_REAUTH=1                      （待你決定放哪）
+3. 你跑一次 notebooklm login（christine）                 ← 這次是投資，不是損失
+4. 之後被撤銷 → L3 自己從 profile 重新取得，不用開瀏覽器
+```
+
+沒有第 1、2 步的話，第 3 步就跟前面那幾次一樣，過幾天又要再來一次。
+
+## 一個更耐久的替代來源
+
+L3 除了「專用 profile」還支援 **CDP attach**（`NOTEBOOKLM_HEADLESS_REAUTH_CDP_URL`）—— 接到你**平常在用的那個 Chrome**，拿它當憑證來源。套件文件自己說這是「dedicated-profile 會腐化」的緩解方案。你日常那個 Chrome 天天在用，session 不會像這份一樣放三個月放到死。
+
+代價是你得讓 Chrome 開著 remote debugging port。
+
+---
+
+要我把第 1 步（270 個 symlink）佈下去嗎？第 2 步的 `NOTEBOOKLM_HEADLESS_REAUTH=1` 建議直接寫進腳本 —— 套件文件把適用情境定義成「operator 自己機器上的本機無人值守 agent」，你這個 sweep 正好就是。但那是把一個帳號等價憑證納入自動流程，我不想替你決定，你說了算。
+
+
+
+

@@ -1457,3 +1457,44 @@ whisper 有 carry_initial_prompt 選項 把它確實普遍套用
 
 
 
+##     2026-08-11 00:00 CST
+
+###    User Prompt
+let's move
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 指示繼續推進（收尾依賴升級並交棒 --update）
+- Diff: 升級 yt-dlp-ejs 0.3.2→0.8.0，驗證 preflight 轉為 clean，交出 --update 指令（sweep 依既定分工由 joshua 自己跑）
+
+
+
+
+##     2026-08-11 00:26 CST
+
+###    User Prompt
+為什麼最近, 常常要我重新 login (notebooklm login), 以前都是一兩個月才過期的
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問為何最近頻繁需要 notebooklm login（以前一兩個月才過期）
+- Diff: 診斷結論：不是過期變快，是 0.3.0→0.8.0 升級後 __Secure-1PSIDTS 每次呼叫都輪替（60s 節流），270 份副本互斥，任一使用即撤銷其餘 → 是撤銷不是過期。另查出 2026-06-10 雙帳號遷移把 browser_profile 留在 ~/.notebooklm.backup.20260610 / .notebooklm.new，現行 christine home 沒有，導致 L3 headless re-auth（NOTEBOOKLM_HEADLESS_REAUTH=1，可免瀏覽器重新取得 cookie）對實際使用的帳號結構性不可用
+
+
+
+
+##     2026-08-11 00:33 CST
+
+###    User Prompt
+試第 1 項
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 授權測試 L3 headless re-auth（接回 christine 的 browser_profile）
+- Diff: 已複製 ~/.notebooklm.backup.20260610/browser_profile（經 Preferences 確認屬 fenj1999@gmail.com=christine）→ ~/.notebooklm-christine/browser_profile；確認套件無 env 可覆寫 profile 路徑（一律相對 NOTEBOOKLM_HOME），改用 symlink 在臺語漢字學資料夾驗證 readiness available=True 且 browser_profile_is_owned=False（套件不會刪）。實際驅動 attempt_headless_reauth 結果 FAILED：profile 的 Google session 已過期（2026-05-13），storage_state 未被改寫。結論：機制已就緒，待一次 notebooklm login 重新灌 profile 後即可自癒；另記錄 CDP attach（NOTEBOOKLM_HEADLESS_REAUTH_CDP_URL）為更耐久的憑證來源
+- File: `/Users/joshua/.notebooklm-christine/browser_profile`
+- File: `/Users/joshua/.notebooklm-christine/browser_profile`
+
+
+
+

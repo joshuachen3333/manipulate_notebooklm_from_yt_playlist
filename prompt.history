@@ -1587,3 +1587,16 @@ Re-authenticated 270 folder(s) — 私人影片 XDJidg6s2DU 觸發誤判
 
 
 
+##     2026-08-11 01:23 CST
+
+###    User Prompt
+到底能不能平行跑多個?how?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求直白說明平行執行的可行性與做法
+- Diff: 無程式變更，僅彙整操作規則：每個平行 process 都要加 --parallel（漏一個即全毀）、--update 不加、同資料夾多終端機本來就安全不需旗標、跑完由下次 --update preflight 自動對齊；並提醒實務天花板是 genesis 單張 RTX 2060 的 whisper 排隊，2–3 個並行為甜蜜點
+
+
+
+

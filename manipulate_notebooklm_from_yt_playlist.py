@@ -431,6 +431,34 @@ _PROFILE_LINK_CHECKED: set[str] = set()
 L3_LOG_MARKERS = ("layer-3", "headless re-auth")
 
 
+def disable_cookie_rotation() -> None:
+    """Stop notebooklm rotating `__Secure-1PSIDTS` — the default for this script.
+
+    Rotation is anti-replay: the new value revokes every other copy. That is
+    fine for notebooklm-py's own model, which assumes processes *share* one
+    storage_state.json (its cross-process flock exists exactly for `xargs -P`
+    style fan-out). This script's model is the opposite — one `.notebooklm/`
+    per playlist folder, ~270 of them — so every rotation orphans 269 copies
+    plus the global one.
+
+    That is true sequentially too, not just in parallel: a --update sweep
+    rotates once per folder and leaves the rest holding dead values. The sweep
+    only looks safe because resolve_live_auth()/--reauth clean up afterwards.
+    Turning rotation off removes the churn instead of repairing it.
+
+    Safe because the package calls the poke "purely a freshness optimisation"
+    whose failures are swallowed — "the caller's request to
+    notebooklm.google.com is the authoritative health check". Nothing breaks;
+    the session simply runs to its natural expiry, which is the pre-0.4
+    behaviour (1-2 months) that worked fine here.
+
+    `--enable-keepalive` reverses this if sessions ever start dying *sooner*
+    than they did before, which is the one thing that would justify the churn.
+    setdefault, so an explicit env var from the caller still wins.
+    """
+    os.environ.setdefault("NOTEBOOKLM_DISABLE_KEEPALIVE_POKE", "1")
+
+
 def enable_headless_reauth() -> None:
     """Opt this process into notebooklm-py's layer-3 headless re-auth.
 
@@ -517,6 +545,7 @@ def run_command(cmd: list[str], capture_json: bool = False, _retried_auth: bool 
     """Run a command and return (success, output/parsed_json).
     On auth failure for notebooklm commands, refreshes auth and retries once."""
     if cmd and cmd[0] == "notebooklm":
+        disable_cookie_rotation()
         enable_headless_reauth()
         ensure_browser_profile_link()
     try:
@@ -5095,15 +5124,23 @@ Examples:
              "Traverses PATH (default: current directory)."
     )
     parser.add_argument(
+        "--enable-keepalive",
+        action="store_true",
+        dest="enable_keepalive",
+        help="Re-enable notebooklm's cookie rotation, which this script disables by "
+             "default. Rotation is anti-replay, so each rotation revokes the other ~269 "
+             "folder copies plus the global one — churn this script then has to repair. "
+             "The package calls the poke 'purely a freshness optimisation', so turning it "
+             "off costs only session freshness. Use this only if sessions start expiring "
+             "SOONER than they did before (pre-0.4 was 1-2 months)."
+    )
+    # Superseded: rotation is now off by default, so this is a no-op. Kept so
+    # existing shell history and PARALLEL_RUNS.md examples keep working.
+    parser.add_argument(
         "--parallel",
         action="store_true",
         dest="parallel",
-        help="Make this run safe to execute alongside runs in OTHER folders, by "
-             "setting NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 so notebooklm stops rotating "
-             "__Secure-1PSIDTS. Rotation is anti-replay: without this, whichever folder "
-             "rotates last silently revokes every other copy. Not needed (and not wanted) "
-             "for --update, which is sequential — there the rotation is useful keepalive. "
-             "Cost: no keepalive refresh, so the session runs to its natural expiry."
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--auto-update-deps",
@@ -5148,17 +5185,11 @@ def main():
 
     args = parse_args()
 
-    # --parallel: suppress __Secure-1PSIDTS rotation for this run so concurrent
-    # runs in different folders stop revoking each other. Measured with three
-    # folders running --reindex at once, throttle window cleared: without it one
-    # folder rotated and the other two were left holding a dead value (they still
-    # exited 0 — the poisoning only bites on the *next* invocation, which is why
-    # this reads as "the second terminal asks me to log in"). With it, all three
-    # finished and every copy still matched.
-    if getattr(args, "parallel", False):
-        os.environ["NOTEBOOKLM_DISABLE_KEEPALIVE_POKE"] = "1"
-        print("Parallel mode: cookie rotation disabled for this run "
-              "(safe alongside other folders; no keepalive refresh).")
+    # Cookie rotation is off by default (see disable_cookie_rotation), which is
+    # what makes concurrent folders safe. --enable-keepalive puts it back.
+    if getattr(args, "enable_keepalive", False):
+        os.environ["NOTEBOOKLM_DISABLE_KEEPALIVE_POKE"] = "0"
+        print("Keepalive rotation ENABLED — this run may revoke other folders' auth.")
 
     # --update: traverse directory tree and run --auto for each playlist folder
     if args.update:

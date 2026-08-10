@@ -275,10 +275,14 @@ manipulate_notebooklm_from_yt_playlist --reauth /Users/joshua/work/youtube_list
 一起死。auth 的複製交給 `--reauth` 處理。唯一的例外（把還活著的那份提升回 global）
 見上面〈Auth 壞掉〉。
 
-**要同時跑不同資料夾，每一個都加 `--parallel`。** 漏掉一個就毀掉全部。完整規則、
-實測數據與並行度上限見 **`PARALLEL_RUNS.md`**。`--update` 不要加。
+**要同時跑不同資料夾，直接跑就好，不用加旗標。** cookie 輪替已預設關閉（2026-08-11 起），
+所以副本不會互相撤銷。完整說明、實測數據與並行度上限見 **`PARALLEL_RUNS.md`**。
 
-**不加 `--parallel` 就不要同時跑不同資料夾的 job，唯讀指令也算。** 每個 job 啟動時把全域 auth 複製
+**但手動下的 `notebooklm` 指令仍然會輪替。** 腳本只管得住自己發出的呼叫；你在終端機
+直接打 `notebooklm list` / `source list` 還是會換發 cookie，把正在跑的 job 弄死。
+跑 job 的時候不要手動下 notebooklm 指令，唯讀的也不行。
+
+（以下是預設關閉之前的行為，留著解釋成因。）每個 job 啟動時把全域 auth 複製
 一份到自己的 `.notebooklm/`，之後各自輪替 cookie；誰最後輪替，其他人手上那份
 （含全域那份）就作廢了。症狀就是：先跑的那個一路跑下去，後開的那個一啟動就叫你
 `notebooklm login`。**連 `source list` / `source fulltext` 這種唯讀指令都會輪替**

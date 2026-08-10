@@ -114,19 +114,16 @@ python3 manipulate_notebooklm_from_yt_playlist.py --debug --colab-url https://xx
 python3 manipulate_notebooklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
 # Terminal 2 (auto-skips videos being processed, picks next available)
 python3 manipulate_notebooklm_from_yt_playlist.py -r --colab-url https://xxxxx.gradio.live "https://..."
-# Concurrent runs in DIFFERENT folders need --parallel, which sets
-# NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1. Each folder holds its own copy of
-# storage_state.json and notebooklm-py >= 0.4 rotates __Secure-1PSIDTS on use;
-# rotation is anti-replay, so whichever folder rotates last revokes every other
-# copy (including the global one). Measured with three folders running --reindex
-# at once, rotation throttle cleared: without the flag one rotated and the other
-# two were left holding a dead value — all three still exited 0, because the
-# poisoning only bites on the NEXT invocation. With the flag, nothing rotated and
-# every copy still matched. Cost: no keepalive refresh, so the session runs to
-# natural expiry. Do NOT pass it to --update, which is sequential and benefits
-# from the rotation.
-python3 manipulate_notebooklm_from_yt_playlist.py --parallel -r "https://..."   # folder A
-python3 manipulate_notebooklm_from_yt_playlist.py --parallel -r "https://..."   # folder B, same time
+# Concurrent runs in DIFFERENT folders are safe with no extra flag: this script
+# disables notebooklm's cookie rotation by default (disable_cookie_rotation()).
+# Rotation is anti-replay, so each rotation revokes the other ~269 folder copies
+# plus the global one — and that is true sequentially too, which is why --update
+# needed resolve_live_auth()/--reauth to clean up after itself. The package calls
+# the poke "purely a freshness optimisation", so the only cost is session
+# freshness. --enable-keepalive reverses it; use only if sessions start expiring
+# sooner than the pre-0.4 norm of 1-2 months. See PARALLEL_RUNS.md.
+python3 manipulate_notebooklm_from_yt_playlist.py -r "https://..."   # folder A
+python3 manipulate_notebooklm_from_yt_playlist.py -r "https://..."   # folder B, same time
 
 # Full auto: setup folder + notebook + index + reindex + upload (one command)
 python3 manipulate_notebooklm_from_yt_playlist.py --auto "https://..."
@@ -903,7 +900,7 @@ notebooklm source rename <source_id> "New Title"
 | File | Read it when |
 |------|--------------|
 | `INDEX_LIST_SPEC.md` | Touching index.list parsing/writing, notebook binding, folder/title standardization, or Curated↔Managed. **Authoritative over this file** on those topics. |
-| `PARALLEL_RUNS.md` | Running several folders at once. The `--parallel` rules, the three-arm measurement behind them, and why the GPU caps useful concurrency at 2-3. |
+| `PARALLEL_RUNS.md` | Running several folders at once. Why cookie rotation is off by default, the three-arm measurement behind it, and why the GPU caps useful concurrency at 2-3. |
 | `NBLM_DUAL_ACCOUNT_SOP_20260610.md` | Switching Google accounts, `nbswitch`/`nbwhich`, quota exhaustion on one account. |
 | `USING_COLAB_4WHISPER.md` | Setting up the Colab T4 Gradio endpoint for `--colab-url`. |
 

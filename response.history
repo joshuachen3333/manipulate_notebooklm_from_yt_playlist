@@ -1419,3 +1419,56 @@ notebooklm-py 0.4+ 每次呼叫都換發 `__Secure-1PSIDTS`，而換發是**防�
 
 
 
+##     2026-08-11 01:31 CST
+
+###    User Prompt
+write this down (to a .md)
+❯ 到底能不能平行跑多個?how?
+
+能。每一個都加 --parallel。
+
+# 終端機 1
+cd /Users/joshua/work/youtube_list/書本A
+manipulate_notebooklm_from_yt_playlist --parallel -r
+
+# 終端機 2（同時）
+cd /Users/joshua/work/youtube_list/書本B
+manipulate_notebooklm_from_yt_playlist --parallel -r
+
+# 終端機 3、4… 同理
+
+四條規則
+
+1. 每一個都要加。 漏掉一個就毀掉全部 —— 那一個會輪替 cookie，把其他所有人手上的值變死。這不是「加了比較好」，是全有全無。
+
+2. --update 不要加。 sweep 本來就是循序跑的，那裡的輪替是有益的續命。加了反而讓 session 提早自然過期。
+....
+
+###    result
+寫成 **`PARALLEL_RUNS.md`**，已進 git 並推送。
+
+## 內容
+
+| 段落 | 說明 |
+|---|---|
+| 開頭 | 結論 + 可直接複製的三個終端機指令 |
+| 四條規則 | 全有全無、`--update` 不加、同資料夾不需要、跑完不用收拾 |
+| 為什麼需要 | 防重放輪替 vs 270 份副本的架構衝突 |
+| 實測 | 三臂表格（含實際的 cookie 值變化） |
+| 實務天花板 | genesis 單張 RTX 2060，2–3 個是甜蜜點 |
+
+另外把兩個**重現時最容易搞錯**的點寫進去了，因為我自己都踩了：
+
+- **陰性臂是 `rc=0` 的** —— 毒下一次呼叫才發作，所以你看到 login 提示時，肇事的那次執行早就結束了
+- **60 秒節流會造出假陰性** —— 我前兩臂就是這樣「通過」的。要重現實驗，每臂之間必須等 storage 檔 mtime 年齡超過 60 秒
+
+## 交叉引用已接好
+
+- `daily_usage.md` 原本那段長敘述**收斂成一句指標**，避免兩份文件日後各說各話
+- `CLAUDE.md` 的 Companion Docs 表登記了新檔
+
+（放在 repo root 且進 git —— 符合 CLAUDE.md 的約定：未追蹤的 `.md` 才是 session 草稿。）
+
+
+
+

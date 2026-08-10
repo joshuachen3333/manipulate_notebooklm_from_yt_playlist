@@ -1,53 +1,76 @@
 # 平行跑多個資料夾
 
 **日期**: 2026-08-11
-**結論**: 能 —— 每一個都加 `--parallel`。
+**結論**: 能，而且**不需要任何旗標** —— cookie 輪替已改為預設關閉。
 
 ```bash
 # 終端機 1
 cd /Users/joshua/work/youtube_list/書本A
-manipulate_notebooklm_from_yt_playlist --parallel -r
+manipulate_notebooklm_from_yt_playlist -r
 
 # 終端機 2（同時）
 cd /Users/joshua/work/youtube_list/書本B
-manipulate_notebooklm_from_yt_playlist --parallel -r
+manipulate_notebooklm_from_yt_playlist -r
 
 # 終端機 3、4… 同理
 ```
 
----
-
-## 四條規則
-
-### 1. 每一個都要加
-
-漏掉一個就毀掉全部 —— 那一個會輪替 cookie，把其他所有人手上的值變死。
-**這不是「加了比較好」，是全有全無。**
-
-### 2. `--update` 不要加
-
-sweep 本來就是循序跑的，那裡的輪替是有益的續命。加了反而讓 session 提早自然過期。
-
-### 3. 同一個資料夾開多個終端機，不需要旗標
-
-那本來就是安全的（共用同一份 auth，靠 `add_source_working.lock` 協調索引）。
-要旗標的是**不同資料夾**。
-
-### 4. 跑完之後不用手動收拾
-
-下次 `--update` 開頭的 preflight 會自己判斷哪份是活的、對齊 270 個。
+> **沿革**：最初做成 `--parallel` 旗標（必須每個 process 都加，漏一個就全毀）。
+> 後來確認輪替對這個 codebase **在任何情況下都是純粹的危害**，於是倒過來設成預設關閉。
+> `--parallel` 保留為 no-op，舊指令照樣能跑。
 
 ---
 
-## 為什麼需要這個旗標
+## 三條規則
 
-notebooklm-py 0.4+ 每次呼叫都換發 `__Secure-1PSIDTS`，而換發是**防重放**的 ——
-誰最後換，其他所有副本當場作廢。270 個資料夾各持一份副本的架構，跟這個機制天生衝突。
+### 1. 不用加任何東西
 
-`--parallel` 就是把換發整個關掉（`NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1`）。
+預設就是安全的。這是刻意的設計 —— **「忘記加旗標」不該是會毀掉 270 個資料夾 auth 的失誤。**
 
-代價是失去 keepalive 續命，session 走自然壽命 —— 也就是回到 0.3.0 時代那個
-**一兩個月才要 login** 的行為。
+### 2. 同一個資料夾開多個終端機，本來就安全
+
+共用同一份 auth，靠 `add_source_working.lock` 協調索引。跟跨資料夾平行是兩回事。
+
+### 3. 手動下的 `notebooklm` 指令**仍然會輪替**
+
+腳本只能管自己發出的呼叫。你在終端機直接打 `notebooklm list`、`notebooklm source list`
+仍然會換發 cookie，把正在跑的 job 弄死。
+
+**跑 job 的時候不要手動下 notebooklm 指令**，唯讀的也不行。
+
+---
+
+## 為什麼輪替對這個專案是純粹的危害
+
+notebooklm-py 0.4+ 每次呼叫都換發 `__Secure-1PSIDTS`，換發是**防重放**的 ——
+新值一產生，其餘所有副本當場作廢。
+
+套件自己的模型是「多個 process **共用同一份** `storage_state.json`」（它的跨 process
+flock 就是為 `xargs -P` 這種 fan-out 設計的）。而這個腳本的模型正好相反：
+**一個 playlist 資料夾一份 `.notebooklm/`，總共約 270 份。** 每輪替一次就孤立 269 份加上 global。
+
+**這在循序執行下同樣成立**，不只是平行。`--update` 每跑完一個資料夾就輪替一次，
+其餘全部持有死值 —— sweep 之所以「看起來安全」，只是因為 `resolve_live_auth()` /
+`--reauth` 事後收拾。關掉輪替是**消除churn**，而不是修補它。
+
+### 關掉安全嗎
+
+套件的 docstring 講得很清楚：
+
+> Failures are logged at DEBUG and swallowed: **this is purely a freshness optimisation**.
+> The caller's request to notebooklm.google.com is the authoritative health check.
+
+輪替**不是功能必需**，關掉不會壞任何東西。唯一的代價是 session 走自然壽命 ——
+也就是 0.4 之前那個**一兩個月才要 login** 的行為。
+
+### 什麼情況該把它打開回去
+
+```bash
+manipulate_notebooklm_from_yt_playlist --enable-keepalive ...
+```
+
+**只有一種情況**：session 開始比以前**更早**過期（0.4 之前是 1–2 個月）。
+那才代表保鮮確實有用、值得付出 churn 的代價。
 
 ---
 
@@ -60,6 +83,8 @@ notebooklm-py 0.4+ 每次呼叫都換發 `__Secure-1PSIDTS`，而換發是**防�
 | 對照 | 1 個資料夾，輪替開 | 輪替了：`PuLJZbDosEAA` → `q55zavasfEAA` |
 | 陰性 | 3 個平行，輪替開 | **分岔**：一個變 `VdquXzRerEAA`，其餘兩份持有死值 |
 | 實驗 | 3 個平行，輪替關 | **完全沒變**，所有副本一致 |
+
+改成預設之後又驗了一次：**不帶任何旗標**、兩個資料夾平行、`rc=0`、值完全沒變。
 
 ### 最重要的觀察
 

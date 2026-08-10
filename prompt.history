@@ -1616,3 +1616,18 @@ write this down (to a .md)
 
 
 
+##     2026-08-11 01:37 CST
+
+###    User Prompt
+--parallel 當作預設可以嗎？縱使我們沒跑第二個平行, 單一一個也 --parallel （預設）
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 提議把 --parallel 改為預設（單獨跑也關輪替）
+- Diff: 採納並倒轉預設。關鍵論證：套件 docstring 自述 poke 是 'purely a freshness optimisation'、失敗被吞掉，故關閉不影響功能；且我先前『sweep 的輪替是有益續命』的說法站不住腳 —— 循序 sweep 每個資料夾輪替一次同樣孤立其餘 269 份，之所以看似安全只是 resolve_live_auth/--reauth 事後收拾。新增 disable_cookie_rotation()（setdefault，掛在 run_command）＋ --enable-keepalive 逆轉旗標；--parallel 降為隱藏 no-op 保相容。實測：不帶任何旗標、兩資料夾平行、rc=0、cookie 完全不變。PARALLEL_RUNS.md 改寫（原第一條規則作廢），CLAUDE.md/daily_usage.md 同步
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/PARALLEL_RUNS.md`
+
+
+
+

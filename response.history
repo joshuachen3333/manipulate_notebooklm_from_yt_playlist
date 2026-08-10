@@ -703,3 +703,81 @@ but that's exactly what I want. so tks
 
 
 
+##     2026-08-08 18:01 CST
+
+###    User Prompt
+--normalize-tw 全樹回溯（4121/4539 檔）go
+
+###    result
+三個 whisper 路徑（local / sshfs / ssh）都配對上了，沒有第四個（Colab 是 `fn_index=0` 單一音訊參數，本來就沒有 prompt 介面）。用**新的長版 domain prompt** 重跑 SSH 的 shell 重切模擬：
+
+
+
+
+##     2026-08-10 09:08 CST
+
+###    User Prompt
+是否把以下這兩個檢查列入 --auto, --update 的預備中
+1, 必要時自動更新 yt-dlp
+2, 必要時自動 --reauth (這個好像已經是了)
+
+###    result
+兩個都值得，但**第一個你要的檢查抓不到你實際的問題** —— 我先查了才發現。
+
+## #1 自動更新 yt-dlp → 不建議自動裝，建議自動偵測
+
+```
+yt-dlp      2026.07.04   ← PyPI 最新版就是這個，已經是最新
+yt-dlp-ejs  0.3.2        ← yt-dlp 要求 0.8.0
+```
+
+你昨天看到的那三行警告不是 yt-dlp 舊，是**它的 JS challenge solver 套件舊**。所以「必要時自動 `pip install -U yt-dlp`」這個 preflight 跑起來會回報「已是最新」，然後什麼都不修，警告照舊。
+
+而且 yt-dlp 自己已經把答案印出來了：
+
+```
+Challenge solver lib script version 0.3.2 is not supported ... supported version: 0.8.0
+```
+
+**正確的檢查不是比版本號，是解析 yt-dlp 自己的 stderr。** 版本號告訴你套件多新，不會告訴你 YouTube 昨天改了什麼；yt-dlp 的警告會。
+
+不建議自動安裝的理由：270 個資料夾跑到一半換套件版本，等於前後兩批用不同的工具鏈跑；pip 失敗沒有 rollback；而且自動修掉之後，你就看不到「環境開始腐化」這個訊號了。
+
+**建議做法**：sweep 開頭跑一次 `yt-dlp -J <一支影片>`，把 stderr 裡的 `not supported` / `Unable to extract` 之類警告抓出來，印一次 + 給確切的修復指令，繼續跑（不中斷）。要自動裝就另外開 `--auto-update-deps` 明確 opt-in。
+
+順帶，現在就能修的一行：
+
+```bash
+pip install -U yt-dlp-ejs      # 0.3.2 → 0.8.0
+```
+
+## #2 自動 reauth → 已經有了，但**方向是錯的**，這才是該補的
+
+現況（兩層都在）：
+
+| 層 | 行為 |
+|---|---|
+| `run_command()` | 嗅到 auth 失敗 → `refresh_auth()` → 重試一次 |
+| `run_update()` | 資料夾失敗且是 auth 錯 → `run_reauth()` → 重跑該資料夾（全 sweep 上限 10 次，連續 3 次失敗中止） |
+
+問題是**兩層都是 global → local**。而昨天你踩到兩次的情況正好相反：global 才是死的那份，活的在某個資料夾裡。這時候「自動 reauth」不是自癒，是**拿死的蓋掉活的**，270 個一起死。
+
+所以要補的不是「自動 reauth」，是**在 reauth 之前先判斷方向**：
+
+```
+sweep 開頭（此時保證沒有 job 在跑）:
+  比對所有 storage_state.json 的 __Secure-1PSIDTS
+  ├ global 就是最新值        → 照舊 --reauth，往下推
+  ├ 某個 local 才是最新值    → 先把它提升回 global，再 --reauth
+  └ 全部互不相同/都很舊      → 中止，提示 notebooklm login
+```
+
+這就是昨天那套手動修復的自動化版本，邏輯是決定性的（比字串、取最新 mtime），沒有猜測成分。mid-sweep 那條重試路徑也套同一個判斷 —— 反正該資料夾剛失敗，不是活的。
+
+---
+
+我的建議是 **#2 全做、#1 只做偵測**。要我動手就說一聲；`.py` 現在沒有 job 在跑，可以改。
+
+
+
+

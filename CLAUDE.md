@@ -131,8 +131,14 @@ python3 manipulate_notebooklm_from_yt_playlist.py --update /path/to/dir # specif
 python3 manipulate_notebooklm_from_yt_playlist.py --update -v           # verbose output
 python3 manipulate_notebooklm_from_yt_playlist.py --update --debug      # debug output
 
+# Let the --update/--auto preflight pip-upgrade a stale yt-dlp toolchain
+# (default is report-only)
+python3 manipulate_notebooklm_from_yt_playlist.py --update --auto-update-deps
+
 # Re-auth: push fresh ~/.notebooklm/storage_state.json into every folder's
 # local .notebooklm/. Run after `notebooklm login` when auth expired.
+# NOTE: pushes global -> local. If global is the revoked copy, --update's
+# preflight fixes the direction first; a bare --reauth does not.
 python3 manipulate_notebooklm_from_yt_playlist.py --reauth              # current dir
 python3 manipulate_notebooklm_from_yt_playlist.py --reauth /path/to/dir
 
@@ -468,11 +474,46 @@ Fully automated single-playlist processing in one command:
 
 Batch processing across multiple playlists:
 ```
+0. Preflight (once, before any folder runs):
+   a. check_dependency_health() — yt-dlp toolchain staleness, REPORT only
+   b. resolve_live_auth()       — make global the credential Google accepts
 1. Find all subdirs under PATH containing index.list files
 2. For each: run `--auto` as subprocess (1-hour timeout per folder)
 3. Log output to update.log in each folder
 4. Print summary (up-to-date / updated / errors)
 ```
+
+### Preflight
+
+Both checks also run for a standalone `--auto`, and are **skipped in `--update`'s
+children** — `run_update()` sets `NBLM_SWEEP_CHILD=1`, which subprocesses inherit
+(no `env=` is passed). Otherwise 270 children would each hit PyPI, and each would
+re-decide which auth copy is live while its siblings rotate theirs.
+
+**a. Dependency health — reports, does not install.** `--auto-update-deps` opts
+into the pip upgrade. Off by default because a mid-sweep upgrade splits a
+270-folder run across two toolchains, a failed install has no rollback, and
+auto-fixing hides the signal that the environment is drifting.
+
+Note that checking *yt-dlp's own version* is the weaker half and in the observed
+case would have caught nothing: yt-dlp was already the latest PyPI release while
+`yt-dlp-ejs` (the YouTube JS-challenge solver) sat at 0.3.2 against a required
+0.8.0. yt-dlp declares the version it needs at
+`yt_dlp/extractor/youtube/jsc/_builtin/vendor/_info.py:VERSION`, so that check is
+exact and needs no network. The PyPI comparison for yt-dlp itself is best-effort
+with a 5s timeout and never blocks.
+
+**b. Live-auth resolution — this is the one that matters.** See §5: every
+`notebooklm` call rotates `__Secure-1PSIDTS`, `refresh_auth()`/`--reauth` push
+global → local, and when global is the revoked copy that direction destroys the
+only live credential in the tree. `resolve_live_auth()` compares the cookie
+across global and every `*/.notebooklm/`, treats the newest mtime as live, and
+promotes a live *local* copy up to global (with a timestamped backup) before any
+downward push. It runs at sweep start and again on the mid-sweep recovery path —
+both points where nothing is in flight. Never call it while a job is running.
+
+`refresh_auth()` carries the matching guard: it refuses to copy global down over
+a local copy with a strictly newer mtime.
 
 ## Text-Back-to-Video (`--text-back-to-video-effort`)
 
@@ -607,7 +648,11 @@ Format: `<index> <url>`
 | `is_text_source(type)` | Text-vs-native check that tolerates `pasted_text` and `text` |
 | `source_fulltext(id)` | `source fulltext` with the CLI's header block stripped |
 | `comparable_text(text)` | Whitespace-normalized form for local-vs-cloud comparison |
-| `run_update(start_path, verbose, debug)` | Traverse dirs, run `--auto` for each playlist folder |
+| `run_update(start_path, verbose, debug, auto_update_deps)` | Traverse dirs, run `--auto` for each playlist folder |
+| `check_dependency_health(auto_update)` | Preflight: yt-dlp / yt-dlp-ejs staleness; reports unless opted in |
+| `resolve_live_auth(start_paths)` | Preflight: promote the live auth copy to global before pushing down |
+| `collect_auth_copies(paths)` | (path, `__Secure-1PSIDTS`, mtime) for global + every folder copy |
+| `read_rotating_cookie(path)` | Pull `__Secure-1PSIDTS` out of a storage_state.json |
 | `cleanup_mp3_files(start_path)` | Delete audio files where matching txt exists |
 | `find_playlist_folders(start_path)` | Find subdirs containing index.list files |
 | `claim_index(idx, lock_file)` | Multi-session: atomically claim a video index |

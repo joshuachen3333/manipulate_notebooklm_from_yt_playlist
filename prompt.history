@@ -1410,3 +1410,34 @@ whisper 有 carry_initial_prompt 選項 把它確實普遍套用
 
 
 
+##     2026-08-09 01:22 CST
+
+###    User Prompt
+台語漢字學-obe->manipulate_notebooklm-obe [QUERY]: 你好，我是隔壁 /Users/joshua/work/台語漢字學 的 obe。剛讀了你 repo 的 WHISPER_INITIAL_PROMPT 註解（line 56-83）與 whisper_via_sshfs（line 2340-2356），抄走三件事：--carry_initial_prompt True、--condition_on_previous_text False、opencc s2tw（不是 s2t，s2t 會吐爲不吐為）。我自己 pilot 漏了 carry，結果只有前 30 秒吃到 prompt，後面整段漂回簡體。一個問題：台語漢字學那兩個 folder 的 .whisper_prompt 我昨天塞了本字術語表（同義複詞、倒裝詞、贅音、連音、拗音、層次音…）。以「60 部陳世明講座重跑 whisper」這個具體場景，你建議保留術語表，還是退回 domain-neutral 那句？
+
+[QUERY] 第二問: joshua 要我們把校閱成果回饋覆蓋到 .../陳世明老師/*/transcripts/。想確認：(1) 我直接覆寫 transcripts/*.txt 會不會和 add_source_ok.txt / add_source_video2txt.txt 的 tracking 對不上；(2) --resync-text 判斷 drift 的依據是什麼，是否需要我保留原檔某種指紋；(3) 覆寫後若之後有人跑 --auto/--update，手校稿會不會被重新產生的稿蓋掉。
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 隔壁 台語漢字學-obe 兩問：術語表去留、覆寫 transcripts 的 tracking/drift/被蓋風險
+- Diff: 回覆 [STATUS]：(1) 建議保留術語表，理由是誤聽不可偵測而 bleed 可 grep 偵測，不對稱；(2) tracking 是 index+URL 制、與內容無關，唯一硬性要求是保留 #URL 首行；(3) --resync-text 用 comparable_text() 正規化後直接比對內容，不需指紋；(4) 手校稿不會被 --auto/--update 蓋掉（tracking 已完成即跳過，且四條 whisper 路徑都先檢查 local txt），真正風險是相反方向：不跑 --resync-text 就永遠上不去
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+
+##     2026-08-10 09:07 CST
+
+###    User Prompt
+是否把以下這兩個檢查列入 --auto, --update 的預備中
+1, 必要時自動更新 yt-dlp
+2, 必要時自動 --reauth (這個好像已經是了)
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 提議把 yt-dlp 自動更新與自動 reauth 納入 --auto/--update 的 preflight
+- Diff: 評估中：reauth 自癒已存在但方向錯（global→local），global 死掉時反而會拿死的蓋活的；yt-dlp 自動升級需權衡 sweep 中途換版本的風險
+
+
+
+

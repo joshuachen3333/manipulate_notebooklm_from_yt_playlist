@@ -161,9 +161,179 @@ def refresh_auth() -> bool:
     except OSError:
         return False
 
+    # Direction guard: a strictly newer local copy is almost certainly the one
+    # Google still accepts (whatever ran last rotated it), and global is the
+    # revoked one. Copying global down here would destroy the only live
+    # credential in the tree. resolve_live_auth() is the fix for that case.
+    try:
+        if local_auth.stat().st_mtime > global_auth.stat().st_mtime:
+            print(f"  [Auth refresh skipped: local copy is newer than global — "
+                  f"global is likely the revoked one]")
+            return False
+    except OSError:
+        return False
+
     shutil.copy2(global_auth, local_auth)
     print(f"  [Auth refreshed from {global_auth}]")
     return True
+
+
+def read_rotating_cookie(state_path: Path) -> str | None:
+    """Return the `__Secure-1PSIDTS` value from a storage_state.json, or None."""
+    try:
+        data = json.loads(state_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    for cookie in data.get("cookies", []):
+        if cookie.get("name") == "__Secure-1PSIDTS":
+            return cookie.get("value")
+    return None
+
+
+def collect_auth_copies(start_paths: list[Path]) -> list[tuple[Path, str, float]]:
+    """Return (path, rotating-cookie value, mtime) for global + every folder copy."""
+    seen: set[Path] = set()
+    candidates = [global_storage_state()]
+    for base in start_paths:
+        candidates.extend(sorted(base.rglob(".notebooklm/**/storage_state.json")))
+        candidates.extend(sorted(base.rglob(".notebooklm/storage_state.json")))
+
+    rows = []
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not path.exists():
+            continue
+        seen.add(resolved)
+        value = read_rotating_cookie(path)
+        if value:
+            rows.append((path, value, path.stat().st_mtime))
+    return rows
+
+
+def resolve_live_auth(start_paths: list[Path]) -> bool:
+    """Make the global storage_state the one Google still accepts, if it isn't.
+
+    Every `notebooklm` call — **including read-only ones** — rotates
+    `__Secure-1PSIDTS` and revokes every other copy. `refresh_auth()` and
+    `--reauth` both push global → local, which is exactly backwards when global
+    is the revoked copy: they would overwrite the only live credential in the
+    tree with a dead one.
+
+    So before pushing anything down, work out which copy is live (newest mtime
+    wins — whatever ran last is what rotated it) and promote it to global first.
+    Callers must only run this when no job is in flight; a live subprocess is
+    rotating its own copy underneath us.
+
+    Returns True if global was replaced.
+    """
+    rows = collect_auth_copies(start_paths)
+    if not rows:
+        print("Auth preflight: no storage_state.json found — run 'notebooklm login'.")
+        return False
+
+    global_auth = global_storage_state()
+    newest_path, live_value, _ = max(rows, key=lambda r: r[2])
+    global_value = read_rotating_cookie(global_auth) if global_auth.exists() else None
+
+    if global_value == live_value:
+        stale = sum(1 for _, v, _ in rows if v != live_value)
+        print(f"Auth preflight: global is current"
+              + (f" ({stale} folder copy/copies stale — --reauth will fix)" if stale else ""))
+        return False
+
+    if newest_path.resolve() == global_auth.resolve():
+        return False  # global *is* the newest; nothing to promote
+
+    print("Auth preflight: global is NOT the live copy.")
+    print(f"  live:   {newest_path}")
+    print(f"  global: {global_auth}")
+    try:
+        if global_auth.exists():
+            backup = global_auth.with_suffix(
+                f".json.bak.{time.strftime('%Y%m%d-%H%M%S')}")
+            shutil.copy2(global_auth, backup)
+            print(f"  backed up global → {backup.name}")
+        global_auth.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(newest_path, global_auth)
+    except OSError as e:
+        print(f"  Promotion FAILED ({e}) — run 'notebooklm login' instead.")
+        return False
+    print("  promoted the live copy to global")
+    return True
+
+
+def check_dependency_health(auto_update: bool = False) -> list[str]:
+    """Report yt-dlp toolchain staleness once, before a sweep starts.
+
+    Deliberately *reports* rather than upgrades by default. A pip install
+    partway through a 270-folder sweep means the first half and the second half
+    ran on different toolchains, it can fail with no rollback, and it hides the
+    signal that the environment is drifting. `--auto-update-deps` opts in.
+
+    Note that "is yt-dlp the latest version" is the weaker of the two checks and
+    on its own would have caught nothing: the observed breakage was yt-dlp-ejs
+    (the YouTube JS-challenge solver) sitting at 0.3.2 while a fully up-to-date
+    yt-dlp required 0.8.0. yt-dlp states the version it needs, so that check is
+    exact and needs no network.
+
+    Returns the list of pip targets that are behind.
+    """
+    problems: list[str] = []
+    try:
+        import importlib.metadata as md
+    except ImportError:
+        return problems
+
+    def installed(pkg: str) -> str | None:
+        try:
+            return md.version(pkg)
+        except Exception:
+            return None
+
+    # 1. yt-dlp-ejs vs the version yt-dlp itself declares — offline and exact.
+    try:
+        from yt_dlp.extractor.youtube.jsc._builtin.vendor import _info as ejs_info
+        required = ejs_info.VERSION
+        have = installed("yt-dlp-ejs")
+        if have and have != required:
+            print(f"  yt-dlp-ejs {have} — yt-dlp requires {required}")
+            problems.append("yt-dlp-ejs")
+    except Exception:
+        pass  # Layout differs on another yt-dlp version; not worth failing over.
+
+    # 2. yt-dlp vs PyPI — best effort, short timeout, never fatal.
+    have_ytdlp = installed("yt-dlp")
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+                "https://pypi.org/pypi/yt-dlp/json", timeout=5) as resp:
+            latest = json.load(resp)["info"]["version"]
+        if have_ytdlp and latest and have_ytdlp != latest:
+            print(f"  yt-dlp {have_ytdlp} — PyPI has {latest}")
+            problems.append("yt-dlp")
+    except Exception:
+        pass  # Offline or PyPI unreachable — not a reason to block a sweep.
+
+    if not problems:
+        print(f"Dependency preflight: yt-dlp {have_ytdlp} and solver are current")
+        return problems
+
+    if auto_update:
+        print(f"  --auto-update-deps: upgrading {', '.join(problems)}...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", *problems],
+            capture_output=True, text=True)
+        if result.returncode == 0:
+            print("  upgrade OK")
+            return []
+        print(f"  upgrade FAILED (continuing anyway):\n{result.stderr.strip()[:400]}")
+    else:
+        print(f"  Fix with: pip install -U {' '.join(problems)}")
+        print("  (or pass --auto-update-deps to let the sweep do it)")
+    return problems
 
 
 def extract_playlist_id(url: str) -> str | None:
@@ -3571,7 +3741,8 @@ def run_reauth(start_paths: list[Path]) -> None:
     print(f"Re-authenticated {count} folder(s) from {global_auth}")
 
 
-def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = False) -> None:
+def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = False,
+               auto_update_deps: bool = False) -> None:
     """Run --auto for each playlist folder found under start_paths.
 
     Args:
@@ -3579,6 +3750,8 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
         verbose: If True, stream full subprocess output to terminal.
         debug: If True, stream output AND pass --debug to subprocess.
                Default (both False): short status lines, detailed log.
+        auto_update_deps: If True, pip-upgrade a stale yt-dlp toolchain instead
+               of only reporting it.
     """
     folders = []
     for start_path in start_paths:
@@ -3601,6 +3774,21 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
 
     total = len(folders)
     path_label = ", ".join(str(p) for p in start_paths)
+
+    # Pre-flight 1: yt-dlp toolchain. Once per sweep, before anything downloads.
+    print("\nDependency preflight...")
+    check_dependency_health(auto_update=auto_update_deps)
+
+    # Pre-flight 2: make sure global holds the credential Google still accepts
+    # BEFORE anything pushes global downward. Safe here — nothing is in flight yet.
+    print()
+    if resolve_live_auth(start_paths):
+        run_reauth(start_paths)
+    print()
+
+    # Children inherit os.environ (no env= is passed to Popen/run below), so this
+    # is how each --auto subprocess knows the parent already did the preflights.
+    os.environ["NBLM_SWEEP_CHILD"] = "1"
 
     # Pre-flight auth check using a local folder's auth (what subprocesses actually use)
     # Find the first folder with .notebooklm/ to test
@@ -3628,6 +3816,10 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
             if global_auth.exists() and check_auth_valid():
                 # Global is good, auto-refresh all local copies
                 print("local copies stale, refreshing...")
+                run_reauth(start_paths)
+            elif resolve_live_auth(start_paths) and check_auth_valid():
+                # Global was the revoked one; a folder still held a live copy.
+                print("  global restored from a live folder copy, refreshing...")
                 run_reauth(start_paths)
             else:
                 print("EXPIRED")
@@ -3752,7 +3944,11 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
         # can't trigger 267 re-auth passes.
         if returncode != 0 and reauth_retries < MAX_SWEEP_REAUTHS and _is_auth_failure(output):
             reauth_retries += 1
-            print("  (auth revoked mid-sweep — re-pushing global auth and retrying)")
+            print("  (auth revoked mid-sweep — resolving live copy and retrying)")
+            # Direction first: the folder that just failed isn't in flight, and
+            # the copy that rotated last may well be a local one. Pushing global
+            # down blindly here is what turns one dead folder into a dead tree.
+            resolve_live_auth(start_paths)
             run_reauth(start_paths)
             run_result = _exec_folder(show_header=False)
             if run_result is None:
@@ -4765,6 +4961,15 @@ Examples:
              "Traverses PATH (default: current directory)."
     )
     parser.add_argument(
+        "--auto-update-deps",
+        action="store_true",
+        dest="auto_update_deps",
+        help="During the --update/--auto dependency preflight, pip-upgrade a stale "
+             "yt-dlp toolchain instead of only reporting it. Off by default: a mid-sweep "
+             "upgrade means the first and second half of a 270-folder run used different "
+             "toolchains, and a failed install has no rollback."
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="With --update: stream full subprocess output per folder (default: short status lines)."
@@ -4808,7 +5013,8 @@ def main():
                 print(f"Error: {sp} is not a directory", file=sys.stderr)
                 sys.exit(1)
             start_paths.append(sp)
-        run_update(start_paths, verbose=args.verbose, debug=args.debug)
+        run_update(start_paths, verbose=args.verbose, debug=args.debug,
+                   auto_update_deps=args.auto_update_deps)
         sys.exit(0)
 
     # --reauth: copy fresh auth to all local .notebooklm/ folders
@@ -5079,6 +5285,19 @@ def main():
             args.target_notebook = args.notebook_url_legacy
 
     # --setup / --auto / standalone --bind-notebook: classify args
+    # Preflight for a standalone --auto. Skipped when --update spawned us:
+    # the parent already ran both checks once, and 270 children each doing a
+    # PyPI round trip — or each re-deciding which auth copy is live while its
+    # siblings are rotating theirs — would be wasteful at best and destructive
+    # at worst.
+    if args.auto and not os.environ.get("NBLM_SWEEP_CHILD"):
+        print("Dependency preflight...")
+        check_dependency_health(auto_update=args.auto_update_deps)
+        print()
+        if resolve_live_auth([Path.cwd()]):
+            run_reauth([Path.cwd()])
+        print()
+
     setup_mode = args.setup or args.auto or args.target_notebook
     if setup_mode:
         # Collect all tokens from positional args AND --bind-notebook values,

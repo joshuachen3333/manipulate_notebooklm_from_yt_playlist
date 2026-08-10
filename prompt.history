@@ -1631,3 +1631,19 @@ write this down (to a .md)
 
 
 
+##     2026-08-11 01:54 CST
+
+###    User Prompt
+最好把這些會輪替, 弄死, 預設 default 的眉角補充進去 daily_*.md 和 相關的 .md 內
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 要求把輪替／弄死／新預設的眉角補進 daily_*.md 與相關 .md
+- Diff: 全文稽核後修正 9 處與新預設矛盾的敘述。daily_usage.md：〈為什麼會壞〉改寫為以「誰還會換發」為主軸（腳本已不換發，唯一剩下的來源是手動 notebooklm 指令，附會/不會換發的指令清單）＋新增〈三個讓它很難察覺的性質〉（不當場報錯、60s 節流、症狀與自然過期同形）＋新增〈預設值〉節（關閉理由、循序同樣受害、套件自述 poke 為 freshness optimisation、何時該用 --enable-keepalive）；踩雷筆記整段過時敘述改為指標。CLAUDE.md 修 4 處無條件敘述。PARALLEL_RUNS.md 補「套件本身行為 vs 現在實際行為」的區別。稽核 5 項全過；順手把最後 1 份 STALE 副本對齊，現為 271 CURRENT
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/daily_usage.md`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/CLAUDE.md`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/PARALLEL_RUNS.md`
+
+
+
+

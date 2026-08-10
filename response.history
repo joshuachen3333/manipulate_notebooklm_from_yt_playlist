@@ -1472,3 +1472,50 @@ manipulate_notebooklm_from_yt_playlist --parallel -r
 
 
 
+##     2026-08-11 01:37 CST
+
+###    User Prompt
+--parallel 當作預設可以嗎？縱使我們沒跑第二個平行, 單一一個也 --parallel （預設）
+
+###    result
+可以，而且**應該** —— 你的直覺比我先前的說法對。已改。
+
+## 兩個決定性的理由
+
+**1. 套件自己說輪替不是功能必需**
+
+> Failures are logged at DEBUG and swallowed: **purely a freshness optimisation**. The caller's request to notebooklm.google.com is the authoritative health check.
+
+關掉不會壞任何東西，只損失保鮮度。
+
+**2. 我先前那句「sweep 的輪替是有益續命」站不住腳**
+
+循序 sweep 每跑完一個資料夾就輪替一次，其餘 269 份 ＋ global 全部持有死值。它之所以「看起來安全」，**只是因為 `resolve_live_auth()` / `--reauth` 在事後收拾**。輪替在循序下同樣是危害，我當時是憑假設在說話。
+
+根本原因是架構錯配：套件假設「多個 process **共用一份** storage_state」（它的跨 process flock 就是為 `xargs -P` 設計的），而這個腳本是「**一個資料夾一份**，共 270 份」。
+
+## 現在的行為
+
+```bash
+# 什麼旗標都不用加，直接開幾個終端機
+cd 書本A && manipulate_notebooklm_from_yt_playlist -r
+cd 書本B && manipulate_notebooklm_from_yt_playlist -r
+```
+
+實測：不帶任何旗標、兩個平行、`rc=0`、cookie **完全沒變**。
+
+| 變更 | |
+|---|---|
+| `disable_cookie_rotation()` | `setdefault`，掛在 `run_command()`，明確設環境變數仍然贏 |
+| `--enable-keepalive` | 逆轉旗標。**只有一種情況該用**：session 開始比 0.4 之前（1–2 個月）**更早**過期 |
+| `--parallel` | 降為隱藏 no-op，你舊的 shell history 照樣能跑 |
+
+## 唯一還存在的危害
+
+**手動下的 `notebooklm` 指令仍然會輪替。** 腳本只管得住自己發出的呼叫。跑 job 的時候你在別的終端機打 `notebooklm list` 或 `source list`，還是會把它弄死 —— 這條我留在文件裡，因為它現在是唯一剩下的地雷（也是我這週自己踩過兩次的那個）。
+
+`PARALLEL_RUNS.md` 已重寫，原本的第一條規則「每個都要加、全有全無」作廢了。
+
+
+
+

@@ -42,7 +42,8 @@ manipulate_notebooklm_from_yt_playlist -r
 
 ## 為什麼輪替對這個專案是純粹的危害
 
-notebooklm-py 0.4+ 每次呼叫都換發 `__Secure-1PSIDTS`，換發是**防重放**的 ——
+notebooklm-py 0.4+ **本身的行為**是每次呼叫都換發 `__Secure-1PSIDTS`（腳本已把它關掉，
+但手動下的指令仍然如此）。換發是**防重放**的 ——
 新值一產生，其餘所有副本當場作廢。
 
 套件自己的模型是「多個 process **共用同一份** `storage_state.json`」（它的跨 process

@@ -121,14 +121,43 @@ prompt 裡的詞彙吐進聽不清楚的段落，所以全域那句放任何學�
 
 ## Auth 壞掉：先判斷「哪一份還活著」，再決定怎麼救
 
-### 為什麼會壞
+### 為什麼會壞：cookie 輪替
 
-notebooklm-py 0.4+ 每次跟 Google 說話都會輪替 `__Secure-1PSIDTS`。輪替之後，
-**所有其他副本（含 global）當場作廢** —— Google 的防重放機制會拒絕舊值。
+notebooklm-py 0.4+ 跟 Google 說話時會**換發** `__Secure-1PSIDTS`。換發是
+**防重放**的 —— 新值一產生，**其餘所有副本（含 global）當場作廢**。你有 270 份
+副本（一個 playlist 資料夾一份），所以一次換發就孤立 269 份。
 
-關鍵是：**唯讀指令也算數。** `notebooklm source list`、`source fulltext`、
-`notebooklm list` 全都會輪替。不是只有上傳才危險，在某個資料夾底下「看一下有
-哪些來源」就足以把其他兩百多個資料夾的 auth 全部弄死。
+**2026-08-11 起，腳本發出的呼叫已經不再換發**（預設關閉，見下方〈預設值〉）。
+所以現在只剩一個來源會弄死你：
+
+> ### ⚠️ 唯一還會弄死你的東西：手動下的 `notebooklm` 指令
+>
+> 腳本只管得住自己發出的呼叫。你在終端機直接打的 `notebooklm` 指令**不受影響，
+> 照樣換發**：
+>
+> ```
+> notebooklm list          ← 會換發
+> notebooklm source list   ← 會換發
+> notebooklm source fulltext <id>   ← 會換發
+> notebooklm status        ← 不會（只讀本機 context）
+> ```
+>
+> **唯讀指令也算數。** 在某個資料夾底下「看一下有哪些來源」，就足以把正在跑的
+> job 和其他兩百多個資料夾的 auth 一起弄死。
+>
+> **跑 job 的時候不要手動下 notebooklm 指令。** 這是本專案目前唯一剩下的
+> auth 地雷，而且我（obe）自己在 2026-08-08 踩了兩次。
+
+### 三個讓它很難察覺的性質
+
+**1. 不會當場報錯。** 肇事的那次執行照樣 `rc=0` 跑完 —— 毒是**下一次呼叫**才發作。
+所以你看到 `notebooklm login` 提示的時候，兇手早就結束了。
+
+**2. 有 60 秒節流。** 同一份 storage 檔在 60 秒內不會重複換發（以 mtime 計算）。
+所以同樣的操作有時會出事、有時不會，看起來像隨機。
+
+**3. 症狀長得跟自然過期一模一樣。** 兩者都是叫你 `notebooklm login`，但
+**自然過期是 1–2 個月一次，被撤銷是隨時**。判斷方法看下面的診斷。
 
 典型症狀：某個資料夾好好的，隔壁資料夾一啟動就叫你 `notebooklm login`。
 
@@ -201,9 +230,32 @@ manipulate_notebooklm_from_yt_playlist --reauth .
 
 ### 為什麼 8 月開始特別常壞
 
-不是過期變快，是**換了死法**。0.3.0 不輪替 cookie，270 份副本可以並存，只有
-自然壽命（1–2 個月）會到期。0.8.0 每次呼叫都輪替 `__Secure-1PSIDTS`，而輪替
+不是過期變快，是**換了死法**。0.3.0 不換發 cookie，270 份副本可以並存，只有
+自然壽命（1–2 個月）會到期。0.8.0 每次呼叫都換發 `__Secure-1PSIDTS`，而換發
 帶防重放 —— 任一份被用過，其餘全部**被撤銷**。症狀一樣，成因完全不同。
+
+### 預設值：腳本已把換發關掉（2026-08-11 起）
+
+`disable_cookie_rotation()` 對腳本發出的每一個 notebooklm 呼叫設
+`NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1`。理由是這個架構（270 份獨立副本）跟
+換發機制天生衝突 —— 套件假設的是「多個 process 共用一份 storage_state」。
+
+**這在循序執行下同樣重要**，不只是平行：`--update` 每跑完一個資料夾就換發一次，
+其餘全部持有死值。sweep 之所以看似安全，只是 `resolve_live_auth()` / `--reauth`
+事後收拾。關掉是**消除**churn，不是修補。
+
+**關掉安全嗎？** 套件自己的 docstring 說 poke 是
+「purely a freshness optimisation」、失敗會被吞掉，權威的健康檢查是實際那個
+請求。所以關掉不影響功能，只損失保鮮 —— 也就是回到 0.4 之前那個
+**1–2 個月才要 login** 的行為。
+
+**什麼時候該打開回去？** 只有一種情況：session 開始比 1–2 個月**更早**過期。
+
+```bash
+manipulate_notebooklm_from_yt_playlist --enable-keepalive ...
+```
+
+（`--parallel` 現在是 no-op，保留只為讓舊指令不報錯。）
 
 現在腳本會自動走 notebooklm-py 的 L3 headless re-auth：從常駐瀏覽器 profile
 免人工重新取得 cookie。`NOTEBOOKLM_HEADLESS_REAUTH=1` 由腳本自己設（不寫進
@@ -270,25 +322,17 @@ manipulate_notebooklm_from_yt_playlist --reauth /Users/joshua/work/youtube_list
 **所有指令都對 cwd 敏感。** 綁定是靠該資料夾的 `.notebooklm/` 加上 `index.list`
 第 2 行，不是全域設定。跑錯目錄就會動到錯的 notebook。
 
-**不要手動複製 `storage_state.json`。** notebooklm-py 0.4+ 每次使用都會輪替
-`__Secure-1PSIDTS`；把舊快照拿去重放，Google 會**撤銷整個 session**，所有資料夾
-一起死。auth 的複製交給 `--reauth` 處理。唯一的例外（把還活著的那份提升回 global）
-見上面〈Auth 壞掉〉。
+**不要手動複製 `storage_state.json`。** 只要有任何一方換發過
+`__Secure-1PSIDTS`（手動下的 notebooklm 指令仍然會），把舊快照拿去重放，Google 會
+**撤銷整個 session**，所有資料夾一起死。auth 的複製交給 `--reauth` 處理。唯一的
+例外（把還活著的那份提升回 global）見上面〈Auth 壞掉〉。
 
-**要同時跑不同資料夾，直接跑就好，不用加旗標。** cookie 輪替已預設關閉（2026-08-11 起），
-所以副本不會互相撤銷。完整說明、實測數據與並行度上限見 **`PARALLEL_RUNS.md`**。
+**同時跑不同資料夾，直接跑就好，不用加旗標。** cookie 換發已預設關閉，副本不會
+互相撤銷。並行度上限與實測數據見 **`PARALLEL_RUNS.md`**。同一個資料夾開多個
+終端機本來就安全（共用同一份 auth，靠 `add_source_working.lock` 協調索引）。
 
-**但手動下的 `notebooklm` 指令仍然會輪替。** 腳本只管得住自己發出的呼叫；你在終端機
-直接打 `notebooklm list` / `source list` 還是會換發 cookie，把正在跑的 job 弄死。
-跑 job 的時候不要手動下 notebooklm 指令，唯讀的也不行。
-
-（以下是預設關閉之前的行為，留著解釋成因。）每個 job 啟動時把全域 auth 複製
-一份到自己的 `.notebooklm/`，之後各自輪替 cookie；誰最後輪替，其他人手上那份
-（含全域那份）就作廢了。症狀就是：先跑的那個一路跑下去，後開的那個一啟動就叫你
-`notebooklm login`。**連 `source list` / `source fulltext` 這種唯讀指令都會輪替**
-—— 在別的資料夾「看一下」就足以弄死正在跑的那個。
-**同一個資料夾**開多個終端機是安全的（共用同一份 auth，靠 `add_source_working.lock`
-協調索引）—— 不安全的是**不同資料夾**並行。
+**但跑 job 的時候不要手動下 `notebooklm` 指令，唯讀的也不行。** 那是唯一還會
+換發 cookie 的來源，細節見上面〈為什麼會壞〉。
 
 **playlist 標題會被正規化，「台」和「臺」會撞在一起。** 資料夾名與 notebook 名都
 走 opencc 簡→繁，所以「台語漢字學」和「臺語漢字學」會落到同一個資料夾、同一本

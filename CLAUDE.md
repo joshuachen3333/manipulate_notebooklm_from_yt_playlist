@@ -273,10 +273,12 @@ When adding a mode, place it in that chain and remember it must set up
 - `--reauth` does that push proactively across every folder in a tree.
 
 **Both push global → local, which is the wrong direction when *global* is the
-dead copy.** Every `notebooklm` call rotates `__Secure-1PSIDTS` and invalidates
-every other copy, including global — and **read-only calls count**: a single
-`source list` or `source fulltext` in one folder revokes the other 269 and the
-global. So the freshest local `.notebooklm/` is often the only live credential,
+dead copy.** A `notebooklm` call can rotate `__Secure-1PSIDTS`, which
+invalidates every other copy including global — and **read-only calls count**:
+a single `source list` or `source fulltext` revokes the other 269 and the
+global. This script no longer causes that (see `disable_cookie_rotation()`),
+but commands the operator types by hand still do, so the skew is still
+reachable and this direction check still has to exist. So the freshest local `.notebooklm/` is often the only live credential,
 and `--reauth` would overwrite it with a dead one.
 
 Diagnose without any network call by comparing `__Secure-1PSIDTS` across
@@ -494,7 +496,7 @@ Batch processing across multiple playlists:
 Both checks also run for a standalone `--auto`, and are **skipped in `--update`'s
 children** — `run_update()` sets `NBLM_SWEEP_CHILD=1`, which subprocesses inherit
 (no `env=` is passed). Otherwise 270 children would each hit PyPI, and each would
-re-decide which auth copy is live while its siblings rotate theirs.
+re-decide which auth copy is live while its siblings run.
 
 **a. Dependency health — reports, does not install.** `--auto-update-deps` opts
 into the pip upgrade. Off by default because a mid-sweep upgrade splits a
@@ -529,6 +531,11 @@ months) ended a session. 0.8.0 rotates `__Secure-1PSIDTS` on essentially every
 call (60s throttle per storage file), and rotation is anti-replay: one use
 **revokes** every other copy. Same symptom, different mechanism — revocation,
 not expiry.
+
+This script now disables rotation outright (`disable_cookie_rotation()`), so it
+is no longer a source of revocation. What remains is hand-typed `notebooklm`
+commands, which still rotate — hence L3 still earns its keep, and the operator
+guidance is "don't run even a read-only notebooklm command while a job is live".
 
 notebooklm-py can recover from that without a human. L3 re-mints dead cookies
 from the persistent **browser profile**, whose Google session outlives
@@ -948,8 +955,11 @@ followed by `--reauth`. Diagnostic script and full procedure: `daily_usage.md`
 → 〈Auth 壞掉〉.
 
 **One folder works, the next says "login" / a notebook looks empty**: the same
-rotation, seen from the other side — something (even a read-only `source list`)
-ran in another folder and revoked this one. Note `source list --json` returns an
+rotation, seen from the other side — something ran in another folder and revoked
+this one. Since rotation is off by default for this script, the likely culprit is
+a hand-typed `notebooklm` command, and a read-only one counts. Note the damage is
+invisible at the time: the run that rotates still exits 0, and the revocation
+only bites the *next* call. Note `source list --json` returns an
 empty `sources` array instead of an error when auth is expired, so an
 "empty notebook" is not evidence the notebook is empty; re-run without `--json`
 to see the real error. `notebooklm status` reads local context and prints

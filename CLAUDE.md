@@ -515,6 +515,60 @@ both points where nothing is in flight. Never call it while a job is running.
 `refresh_auth()` carries the matching guard: it refuses to copy global down over
 a local copy with a strictly newer mtime.
 
+### Layer-3 headless re-auth (why logins got frequent, and the fix)
+
+The jump in manual `notebooklm login` prompts was **not** faster expiry. Under
+0.3.0 nothing rotated, so 270 copies coexisted and only natural expiry (1-2
+months) ended a session. 0.8.0 rotates `__Secure-1PSIDTS` on essentially every
+call (60s throttle per storage file), and rotation is anti-replay: one use
+**revokes** every other copy. Same symptom, different mechanism — revocation,
+not expiry.
+
+notebooklm-py can recover from that without a human. L3 re-mints dead cookies
+from the persistent **browser profile**, whose Google session outlives
+`storage_state.json`. Two prerequisites, both of which were missing here:
+
+1. **Opt-in.** L3 never auto-fires unless `NOTEBOOKLM_HEADLESS_REAUTH=1`.
+   `enable_headless_reauth()` sets it (via `setdefault`, so an explicit `0`
+   wins) for this script's runs only — deliberately not in `~/.zshrc`, because
+   an interactive command has a human in front of it and needs no unattended
+   recovery.
+2. **A reachable profile.** `paths.get_browser_profile_dir()` resolves strictly
+   relative to `NOTEBOOKLM_HOME` with no env override, and this script points
+   that at each playlist folder — where no profile exists. `ensure_browser_profile_link()`
+   symlinks the shared `~/.notebooklm/browser_profile` into the active home,
+   just-in-time from `run_command()` rather than as a one-off tree sweep so
+   folders created later are covered. `browser_profile_is_owned()` returns False
+   for a link pointing outside the home, so notebooklm never deletes it.
+
+**The profile itself rots.** Christine's was orphaned by the 2026-06-10
+dual-account migration (`cp -R` moved storage_state but not `browser_profile`)
+and its Google session was dead by the time it was restored — three months
+unnoticed, because 0.3.0 never needed it. A `notebooklm login` refreshes the
+profile as well as the storage state, so the recovery path is only as fresh as
+the last login. Probe it without driving a browser:
+
+```python
+from notebooklm._auth.headless_reauth import headless_reauth_readiness
+print(headless_reauth_readiness().detail)
+```
+
+Readiness only proves the prerequisites; it deliberately does not claim the
+Google session is live. Only `attempt_headless_reauth()` knows that.
+
+**Automatic recovery makes failure quiet**, which is how a dead profile hides.
+`_report_l3_activity()` echoes any `Layer-3` / `headless re-auth` line out of
+the CLI, and `run_command()` prints `[auth] recovered on retry` when the auth
+retry succeeds. Note the package logs L3 *success* at INFO while the default
+`NOTEBOOKLM_LOG_LEVEL` is WARNING, so in practice the echo catches failures and
+the retry note is the success signal.
+
+A longer-lived alternative exists: `NOTEBOOKLM_HEADLESS_REAUTH_CDP_URL` attaches
+to an already-running Chrome instead of a dedicated profile — the package's own
+mitigation for profile staleness. It needs Chrome up with a debugging port, so
+it does not suit an unattended sweep; keep it as the fallback for when the
+dedicated profile rots again.
+
 ## Text-Back-to-Video (`--text-back-to-video-effort`)
 
 Attempts to replace whisper text sources with native YouTube imports:
@@ -653,6 +707,9 @@ Format: `<index> <url>`
 | `resolve_live_auth(start_paths)` | Preflight: promote the live auth copy to global before pushing down |
 | `collect_auth_copies(paths)` | (path, `__Secure-1PSIDTS`, mtime) for global + every folder copy |
 | `read_rotating_cookie(path)` | Pull `__Secure-1PSIDTS` out of a storage_state.json |
+| `enable_headless_reauth()` | Opt this process into L3 headless re-auth (`setdefault`, so `0` wins) |
+| `ensure_browser_profile_link()` | Symlink the shared browser profile into the active `NOTEBOOKLM_HOME` |
+| `_report_l3_activity(output)` | Echo notebooklm's Layer-3 lines so silent recovery isn't invisible |
 | `cleanup_mp3_files(start_path)` | Delete audio files where matching txt exists |
 | `find_playlist_folders(start_path)` | Find subdirs containing index.list files |
 | `claim_index(idx, lock_file)` | Multi-session: atomically claim a video index |

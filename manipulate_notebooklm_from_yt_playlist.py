@@ -407,18 +407,113 @@ def normalize_youtube_url(url: str) -> str:
     return raw
 
 
+# Homes whose browser-profile link has already been checked this process.
+_PROFILE_LINK_CHECKED: set[str] = set()
+# Substrings that mean notebooklm's layer-3 headless re-auth said something.
+L3_LOG_MARKERS = ("layer-3", "headless re-auth")
+
+
+def enable_headless_reauth() -> None:
+    """Opt this process into notebooklm-py's layer-3 headless re-auth.
+
+    L3 re-mints dead cookies from the persistent browser profile with no human,
+    but never auto-fires unless this env var is set — a deliberate design
+    decision, because the profile is an *account-equivalent* credential that
+    outlives storage_state.json. The package sanctions exactly one use case for
+    the auto-fire: "a local, unattended agent/worker on the operator's own
+    machine", which is what a multi-hour --update sweep is.
+
+    Set here rather than in ~/.zshrc on purpose: only this script's runs opt in.
+    An interactive `notebooklm` command has a human sitting in front of it and
+    does not need unattended recovery. An explicit "0" from the caller wins.
+    """
+    os.environ.setdefault("NOTEBOOKLM_HEADLESS_REAUTH", "1")
+
+
+def ensure_browser_profile_link() -> None:
+    """Make the shared browser profile reachable from the active NOTEBOOKLM_HOME.
+
+    notebooklm-py resolves the browser profile strictly relative to
+    NOTEBOOKLM_HOME (`paths.get_browser_profile_dir`) with no env override, and
+    this script points that at each playlist folder's `.notebooklm/`. So L3 is
+    available from the global home and *unavailable* everywhere real work
+    happens — the profile only exists once, under `~/.notebooklm/`.
+
+    A symlink closes that gap for 0 bytes. Kept as a just-in-time check rather
+    than a one-off rollout so folders created later are covered automatically;
+    a static sweep of the tree silently rots the moment a playlist is added.
+    The package's `browser_profile_is_owned()` reports False for a link pointing
+    outside the home, so notebooklm will never delete the shared profile.
+    """
+    raw_home = os.environ.get("NOTEBOOKLM_HOME")
+    if not raw_home:
+        return
+    home = Path(raw_home).expanduser()
+    try:
+        key = str(home.resolve())
+    except OSError:
+        return
+    if key in _PROFILE_LINK_CHECKED:
+        return
+    _PROFILE_LINK_CHECKED.add(key)
+
+    shared = Path.home() / ".notebooklm" / "browser_profile"
+    try:
+        if not shared.is_dir() or not home.is_dir() or home.resolve() == (Path.home() / ".notebooklm").resolve():
+            return  # No shared profile, or we *are* the global home.
+    except OSError:
+        return
+
+    profile = os.environ.get("NOTEBOOKLM_PROFILE", "default")
+    profiled_dir = home / "profiles" / profile
+    target = (profiled_dir if profiled_dir.is_dir() else home) / "browser_profile"
+    if target.exists() or target.is_symlink():
+        return  # Already linked, or a real profile lives here — leave it alone.
+    try:
+        target.symlink_to(shared)
+    except OSError:
+        pass  # Best effort; L3 just stays unavailable for this folder.
+
+
+def _report_l3_activity(output: str) -> None:
+    """Surface notebooklm's layer-3 lines so silent recovery isn't *invisible*.
+
+    Automatic recovery trades a loud failure for a quiet one: without this, the
+    day the browser profile itself dies looks exactly like the day everything
+    worked. (That is how the profile restored today managed to sit dead from
+    May to August unnoticed.) Note the package logs L3 *success* at INFO and
+    the default level is WARNING, so in practice this prints failures; a
+    successful recovery shows up as the retry note in run_command().
+    """
+    if not output:
+        return
+    low = output.lower()
+    if not any(marker in low for marker in L3_LOG_MARKERS):
+        return
+    for line in output.splitlines():
+        if any(marker in line.lower() for marker in L3_LOG_MARKERS):
+            print(f"  [L3] {line.strip()[:160]}")
+
+
 def run_command(cmd: list[str], capture_json: bool = False, _retried_auth: bool = False) -> tuple[bool, str | dict]:
     """Run a command and return (success, output/parsed_json).
     On auth failure for notebooklm commands, refreshes auth and retries once."""
+    if cmd and cmd[0] == "notebooklm":
+        enable_headless_reauth()
+        ensure_browser_profile_link()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             error_output = result.stderr or result.stdout
+            _report_l3_activity(error_output)
             # Auto-refresh auth on failure for notebooklm commands
             if (not _retried_auth and cmd and cmd[0] == "notebooklm"
                     and _is_auth_failure(error_output)):
                 if refresh_auth():
-                    return run_command(cmd, capture_json=capture_json, _retried_auth=True)
+                    retry = run_command(cmd, capture_json=capture_json, _retried_auth=True)
+                    if retry[0]:
+                        print("  [auth] recovered on retry — no manual login needed")
+                    return retry
             return False, error_output
 
         output = result.stdout.strip()
@@ -429,8 +524,12 @@ def run_command(cmd: list[str], capture_json: bool = False, _retried_auth: bool 
                 # Sometimes auth failure returns HTML instead of JSON
                 if (not _retried_auth and cmd and cmd[0] == "notebooklm"
                         and _is_auth_failure(output)):
+                    _report_l3_activity(output)
                     if refresh_auth():
-                        return run_command(cmd, capture_json=capture_json, _retried_auth=True)
+                        retry = run_command(cmd, capture_json=capture_json, _retried_auth=True)
+                        if retry[0]:
+                            print("  [auth] recovered on retry — no manual login needed")
+                        return retry
                 return False, f"Failed to parse JSON: {output}"
         return True, output
     except subprocess.TimeoutExpired:

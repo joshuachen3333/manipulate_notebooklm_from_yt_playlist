@@ -191,6 +191,33 @@ manipulate_notebooklm_from_yt_playlist --reauth .
 
 **2026-08-08 實測有效**，省掉一次瀏覽器登入。
 
+### 為什麼 8 月開始特別常壞
+
+不是過期變快，是**換了死法**。0.3.0 不輪替 cookie，270 份副本可以並存，只有
+自然壽命（1–2 個月）會到期。0.8.0 每次呼叫都輪替 `__Secure-1PSIDTS`，而輪替
+帶防重放 —— 任一份被用過，其餘全部**被撤銷**。症狀一樣，成因完全不同。
+
+現在腳本會自動走 notebooklm-py 的 L3 headless re-auth：從常駐瀏覽器 profile
+免人工重新取得 cookie。`NOTEBOOKLM_HEADLESS_REAUTH=1` 由腳本自己設（不寫進
+`~/.zshrc` —— 你手動下指令時人就在旁邊，不需要無人值守復原），profile 則靠
+symlink 從 `~/.notebooklm/browser_profile` 共用到每個資料夾。
+
+⚠️ **profile 自己也會腐化。** Christine 那份在 2026-06-10 雙帳號遷移時被留在
+`~/.notebooklm.backup.20260610/`，等到 8 月接回來時裡面的 Google session 已經
+死了 —— 放了三個月沒人發現，因為 0.3.0 時代根本用不到它。
+
+`notebooklm login` 會同時重灌 profile 和 storage_state，所以這條自癒路徑的新鮮度
+等於你上次登入的時間。想檢查（純本機，不開瀏覽器、不碰 cookie）：
+
+```bash
+python3 -c "
+from notebooklm._auth.headless_reauth import headless_reauth_readiness
+print(headless_reauth_readiness().detail)"
+```
+
+注意它只驗證「條件齊了」，**刻意不聲稱 session 還活著** —— 只有真的驅動瀏覽器
+才知道。
+
 ### 修復 B：A 失敗就走正規路
 
 ```bash

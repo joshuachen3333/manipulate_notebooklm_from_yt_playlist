@@ -1512,3 +1512,19 @@ let's move
 
 
 
+##     2026-08-11 00:45 CST
+
+###    User Prompt
+ok, all agreed.
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 同意四項 L3 佈署決策，授權實作
+- Diff: 新增 enable_headless_reauth()（setdefault NOTEBOOKLM_HEADLESS_REAUTH=1，僅本腳本、不入 ~/.zshrc）、ensure_browser_profile_link()（在 run_command() 咽喉點 just-in-time 建 symlink，帶 memo；新資料夾自動覆蓋）、_report_l3_activity()（回顯 Layer-3 訊息）＋ run_command 重試成功時印 [auth] recovered。回填現有樹：建立 267 個 symlink、2 個已存在，269/269 真實資料夾 readiness=True。發現一個異常：investment/《創業英雄匯》.../transcripts/investment/ 是 2026-01-31 舊 checkout（自帶 .git，310 筆 legacy index.list、無 .notebooklm），--update 會把它當 playlist 資料夾並建出多餘 notebook，未處置待 joshua 決定
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/CLAUDE.md`
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/daily_usage.md`
+
+
+
+

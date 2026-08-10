@@ -1528,3 +1528,16 @@ ok, all agreed.
 
 
 
+##     2026-08-11 00:57 CST
+
+###    User Prompt
+這樣一改, 日後我可以在 youtube_playlist/ 底下不同書本, 啟動多個 manipulate_* 嗎?還會觸發輪動, 造成需要 login 嗎？
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問這次 L3 改動能否讓不同書本資料夾平行跑 manipulate_*、還會不會觸發輪替導致 login
+- Diff: 純分析未動工。結論：(1) L3 不解平行問題且更糟 —— A 輪替→B 失效→B 觸發 L3→A 失效，來回踩，且 L3 single-flight 是 threading.Lock 跨 process 無效，兩個 headless Chrome 會搶同一 profile 的 SingletonLock；(2) 真正槓桿是 NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1，已確認 keepalive.py 的 _poke_session 與 _rotate_cookies 兩個入口都被它擋住，關掉即不輪替→副本不互相撤銷→平行安全，代價是回到自然過期，但配合 L3 可自動復原；(3) 共用單一 storage_state.json 走不通 —— _rotation_lock_path 用 with_name 取兄弟檔且不 resolve symlink，270 個 link 產生 270 個鎖檔等於沒鎖，要共用整個 profiles/default 又會連 context.json 一起共用導致所有資料夾綁同一本 notebook。已聲明平行情境未實測，僅由原始碼推導
+
+
+
+

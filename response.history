@@ -1100,3 +1100,122 @@ L3 除了「專用 profile」，還支援 **CDP attach**（`NOTEBOOKLM_HEADLESS_
 
 
 
+##     2026-08-11 00:45 CST
+
+###    User Prompt
+ok, all agreed.
+
+###    result
+四項全部完成。
+
+## 做了什麼
+
+| | 結果 |
+|---|---|
+| `ensure_browser_profile_link()` | 掛在 `run_command()` 咽喉點，帶 memo，**新資料夾自動涵蓋** |
+| 回填現有樹 | 建 267 個 symlink、2 個已存在 → **269/269 真實資料夾 readiness=True** |
+| `enable_headless_reauth()` | `setdefault`，只在本腳本生效，明確設 `0` 仍然贏 |
+| L3 可見性 | `_report_l3_activity()` 回顯 Layer-3 訊息 ＋ 重試成功時印 `[auth] recovered on retry` |
+| 文件 | CLAUDE.md 新增〈Layer-3 headless re-auth〉；daily_usage.md 新增〈為什麼 8 月開始特別常壞〉＋ readiness 探測指令 |
+
+驗證涵蓋 6 個邊界：`profiles/` 版與扁平版 layout、不覆蓋既有實體目錄、global home 不自我連結、明確 `0` 不被覆寫、log sniff。
+
+## 剩最後一步 —— 你跑
+
+```bash
+nbwhich                    # 確認在 christine
+notebooklm login
+```
+
+那份接回來的 profile 裡的 Google session 已經死了（`attempt_headless_reauth` 實測 FAILED，且沒有動到 storage_state）。`notebooklm login` 會**同時重灌 profile 和 storage_state** —— 所以這次登入不只是續命，是把自癒路徑接上電。
+
+之後被撤銷時，L3 會自己從 profile 重新取得，sweep 不會停下來等你。
+
+## 兩件順手發現的事
+
+**`investment/《創業英雄匯》.../transcripts/investment/`** 是 2026-01-31 的舊 checkout，自帶 `.git`、`.claude`、310 筆 legacy 3 欄 index.list，而且**沒有 `.notebooklm`**。`--update` 會把它當成一個 playlist 資料夾，跑 `--auto` 就會替它憑空建一本 notebook。我沒動它（裡面有 `.git`），但你下次跑全樹 sweep 前應該處理掉。
+
+**profile 會腐化這件事已經寫進文件了**，附上純本機的 readiness 探測指令。它只驗證條件齊備，刻意不聲稱 session 還活著 —— 這個區別今天讓我們少走了一趟冤枉路。
+
+
+
+
+##     2026-08-11 00:57 CST
+
+###    User Prompt
+這樣一改, 日後我可以在 youtube_playlist/ 底下不同書本, 啟動多個 manipulate_* 嗎?還會觸發輪動, 造成需要 login 嗎？
+
+###    result
+查完了，答案分三層。
+
+## 1. L3 **不會**讓平行變安全 —— 反而更糟
+
+L3 修的是「被撤銷之後怎麼自己站起來」，不是「不要互相撤銷」。兩個資料夾同時跑的話：
+
+```
+A 輪替 → B 手上的值失效
+       → B 觸發 L3，從 profile 重新取得一組 → A 手上的值失效
+       → A 觸發 L3 → B 失效 → ...
+```
+
+每次 L3 是一趟 12 秒的 headless Chrome。而且我先前查到 **L3 的 single-flight 鎖是 `threading.Lock`，跨 process 無效** —— 兩個 process 會同時去搶同一個 browser profile 的 Chrome SingletonLock。
+
+所以現況是把「停下來叫你 login」換成「互相踩、來回重新取得」。**比現在更糟。**
+
+## 2. 真正的槓桿是關掉輪替本身
+
+我確認了兩個輪替入口**都**被同一個環境變數擋住：
+
+```python
+# keepalive.py，_poke_session 與 _rotate_cookies 各一處
+if os.environ.get(NOTEBOOKLM_DISABLE_KEEPALIVE_POKE_ENV) == "1":
+    return
+```
+
+`NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1` → 完全不輪替 → 270 份副本的值永遠一致 → **互不撤銷，平行安全**。
+
+代價是失去 keepalive 的續命，回到自然過期。但那正是你 0.3.0 時代的行為 —— **一兩個月才要 login，而你當時是滿意的**。
+
+而且現在跟那時有個差別：**自然過期時 L3 會自己救回來**（前提是 profile 新鮮）。所以
+
+```
+關輪替  → 平行安全，回到 1–2 個月的自然壽命
+＋ L3   → 連那 1–2 個月一次的 login 都自動化
+```
+
+這兩個組合起來才是你要的東西。L3 單獨用在平行情境是錯的，用在「自然過期」情境是對的。
+
+## 3. 我查過但走不通的第三條路
+
+想過讓 270 個資料夾**共用同一個 `storage_state.json`**（symlink），這樣只有一份值、沒有分歧。輪替的鎖確實是跨 process 的 `flock`。但：
+
+```python
+_rotation_lock_path = storage_path.with_name(f".{name}.rotate.lock")
+```
+
+鎖檔是放在**該路徑的兄弟位置**，而 symlink 不會被 resolve —— 270 個 link 會產生 270 個不同的鎖檔，等於沒鎖。要修就得共用整個 `profiles/default/` 目錄，但 `context.json`（notebook 綁定）也在裡面，共用等於所有資料夾綁到同一本 notebook。**死路。**
+
+---
+
+## 建議
+
+先在**兩個**資料夾實測，不要直接開全樹：
+
+```bash
+# 終端機 1
+cd <資料夾A> && NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 manipulate_notebooklm_from_yt_playlist -r
+# 終端機 2（同時）
+cd <資料夾B> && NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 manipulate_notebooklm_from_yt_playlist -r
+```
+
+兩邊都跑得下去、都沒叫 login，就成立。
+
+**我沒有實測過平行情境** —— 上面是從原始碼推的，不是驗證過的結論。這個區別很重要，我不想讓你以為它已經證實了。
+
+測通之後我再把它做進腳本（跟 `NOTEBOOKLM_HEADLESS_REAUTH` 一樣用 `setdefault`，並在 `--update` 那條**不要**設，因為 sweep 本來就是循序的，循序時輪替反而是有益的續命）。
+
+要我先做一個最小的平行測試嗎？用兩個已完成的資料夾跑 `--reindex`（rename-only，不會動內容），最快能驗證這件事。
+
+
+
+

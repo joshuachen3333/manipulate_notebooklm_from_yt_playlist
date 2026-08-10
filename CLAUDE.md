@@ -873,6 +873,16 @@ notebooklm source rename <source_id> "New Title"
     when auth is expired — an empty list is not proof the notebook is empty.
     Cross-check with plain `notebooklm source list`, which does report the error.
 
+    A fourth, in this script rather than the CLI: **`_is_auth_failure()` is applied
+    to a whole folder's log**, yt-dlp and whisper output included. It must match
+    only phrasing notebooklm itself produces. A private YouTube video says
+    "Private video. Sign in if you've been granted access... Use
+    --cookies-from-browser", which satisfied the old "generic error word AND
+    vague auth word" heuristic — one unavailable video re-authenticated all 270
+    folders mid-sweep and burned a slot of the sweep's re-auth budget. The
+    mid-sweep gate now confirms with `check_auth_valid()` (a real network call)
+    before acting on the string sniff.
+
 11. **`--reindex`/`--reorder` = rename only**: Never delete sources, never re-create. YouTube sources imported natively are precious (notebooklm-py `source add` for YouTube fails frequently). Only use `notebooklm source rename` to update titles.
 
 12. **Rename immediately after add doesn't stick**: NotebookLM overwrites the

@@ -1541,3 +1541,33 @@ ok, all agreed.
 
 
 
+##     2026-08-11 00:59 CST
+
+###    User Prompt
+好的, 我的大 batch 先暫停, 你小平行測試等下再跑
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 大 batch 暫停，平行測試延後執行
+- Diff: 平行測試（兩資料夾同時 --reindex + NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1）待命，不在此輪執行
+
+
+
+
+##     2026-08-11 01:06 CST
+
+###    User Prompt
+Nothing to rename. All matched sources are already correct.
+  (auth revoked mid-sweep — resolving live copy and retrying)
+Auth preflight: global is current (6 folder copy/copies stale — --reauth will fix)
+Re-authenticated 270 folder(s) — 私人影片 XDJidg6s2DU 觸發誤判
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 回報私人影片觸發整棵樹誤 re-auth 的 log
+- Diff: 修兩個 bug：(1) _is_auth_failure 的弱字串比對（auth/cookie/sign in/token + 泛用 error 字）被 yt-dlp 的私人影片訊息命中，改為只比對 notebooklm 實際輸出的強標記（run 'notebooklm login' / authentication expired / not authenticated / accounts.google.com 等），並排除其成功訊息；mid-sweep 復原改為兩段式，字串嗅探後再以 check_auth_valid() 真實網路呼叫確認，同時保留對無 auth 字樣的 'Failed to select notebook' 的涵蓋。(2) is_unavailable_video_title 加入 'na' 與空字串 —— yt-dlp --print 在 title 欄位缺失時印字面 NA，該筆因此未被既有防護攔下，白白燒掉 2 次重試＋SSH/本機 whisper 下載。全樹量測：25 筆將自動跳過（20 筆 [Private video]、5 筆 NA）
+- File: `/Users/joshua/work/manipulate_notebooklm_from_yt_playlist/manipulate_notebooklm_from_yt_playlist.py`
+
+
+
+

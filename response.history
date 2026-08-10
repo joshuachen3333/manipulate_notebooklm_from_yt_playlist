@@ -1219,3 +1219,37 @@ cd <資料夾B> && NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 manipulate_notebooklm_fro
 
 
 
+##     2026-08-11 00:59 CST
+
+###    User Prompt
+好的, 我的大 batch 先暫停, 你小平行測試等下再跑
+
+###    result
+好，等你說開始。
+
+順帶回報一件現況：你剛剛那輪 batch 跑過 `Algorithmic_Trading_With_Python`，所以現在 auth 又分岔了 —— 那個資料夾是 `CURRENT`，global 和其餘 268 個是 `STALE`。
+
+這不用你處理，`--update` 開頭的 preflight 會自己判斷方向、把活的提升回 global 再往下推。**但如果你直接在單一資料夾下手動指令，就會撞到 login。** 要先修就是：
+
+```bash
+cd /Users/joshua/work/youtube_list
+manipulate_notebooklm_from_yt_playlist --update .   # 讓 preflight 順手把 auth 對齊（會開始跑 sweep）
+```
+
+不想跑 sweep 的話就照〈Auth 壞掉〉那節手動提升。
+
+## 等下要跑的測試（先講清楚我會做什麼）
+
+```bash
+# 兩個已完成的資料夾，同時開，rename-only 不動內容
+終端機1: cd <A> && NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 manipulate_* --reindex
+終端機2: cd <B> && NOTEBOOKLM_DISABLE_KEEPALIVE_POKE=1 manipulate_* --reindex
+```
+
+判定標準：兩邊都跑完、都沒有 auth 錯誤，且結束後三份副本的 `__Secure-1PSIDTS` 仍然一致。
+
+**一個前提**：`notebooklm login` 還沒跑。測試本身不需要 L3，所以不影響結論；但如果測試中途 auth 自然失效，我會分不清是「平行互踩」還是「本來就過期」。所以最好在 auth 剛對齊、狀態乾淨的時候跑。
+
+
+
+

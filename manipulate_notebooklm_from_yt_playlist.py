@@ -93,21 +93,39 @@ KEEP_TRANSCRIPTS_MARKER = ".keep_transcripts"
 MIN_TRANSCRIPT_BODY_CHARS = 200
 
 # Auth failure patterns (case-insensitive match against stderr/stdout)
+# Strings that only notebooklm-py emits when the session is actually dead.
+#
+# These used to be a bag of weak substrings ("auth", "cookie", "token",
+# "sign in", "session") ANDed with a generic error word — which a **private
+# YouTube video** satisfies, because yt-dlp's own message reads "Private video.
+# Sign in if you've been granted access... Use --cookies-from-browser". One
+# unavailable video therefore looked like a revoked session, and mid-sweep
+# recovery re-authenticated all 270 folders and burned a slot of the sweep's
+# re-auth budget. Match only on phrasing the notebooklm CLI actually produces.
+#
+# Deliberately excludes notebooklm's *success* messages, which also contain the
+# word: "Authentication saved to", "Authentication tokens obtained successfully".
 AUTH_FAIL_PATTERNS = [
-    "auth", "login", "session", "expired", "unauthorized", "401",
-    "forbidden", "credential", "sign in", "signed out", "not authenticated",
-    "token", "cookie",
+    "run 'notebooklm login'",
+    'run "notebooklm login"',
+    "authentication expired",
+    "authentication required",
+    "not authenticated",
+    "re-authenticate",
+    "accounts.google.com",
 ]
 
 
 def _is_auth_failure(output: str) -> bool:
-    """Check if command output suggests an auth failure."""
+    """Check if command output is a genuine notebooklm auth failure.
+
+    A single strong marker is enough — see AUTH_FAIL_PATTERNS for why the old
+    "generic error word AND vague auth word" conjunction was worse than useless
+    here: the output this is applied to in run_update() is a whole folder's log,
+    yt-dlp and whisper chatter included.
+    """
     lower = output.lower()
-    # Must look like an error AND mention auth-related terms
-    error_indicators = ["error", "fail", "unable", "denied", "refused", "invalid", "expired"]
-    has_error = any(e in lower for e in error_indicators)
-    has_auth = any(a in lower for a in AUTH_FAIL_PATTERNS)
-    return has_error and has_auth
+    return any(marker in lower for marker in AUTH_FAIL_PATTERNS)
 
 
 def storage_state_path(home: Path) -> Path:
@@ -617,6 +635,14 @@ def is_unavailable_video_title(title: str) -> bool:
         "members only video",
         "video unavailable",
         "age-restricted video",
+        # yt-dlp's --print prints a literal "NA" when the title field is absent,
+        # which in a playlist listing means the entry can't be fetched. Seen on
+        # a private video that then burned 2 retries + a full SSH/local whisper
+        # download cycle before dying. A real video titled exactly "NA" would be
+        # skipped too — visible in the summary, and fixable by editing the title
+        # in index.list.
+        "na",
+        "",
     } or t.startswith("private video ") or t.startswith("deleted video ")
 
 
@@ -4041,7 +4067,16 @@ def run_update(start_paths: list[Path], verbose: bool = False, debug: bool = Fal
         # by the time we reach it. Re-push the global auth once and retry the
         # folder before calling it an error. Guarded so one dead global auth
         # can't trigger 267 re-auth passes.
-        if returncode != 0 and reauth_retries < MAX_SWEEP_REAUTHS and _is_auth_failure(output):
+        # Two-stage gate. _is_auth_failure() is a cheap string sniff over a whole
+        # folder's log — yt-dlp and whisper chatter included — so it decides only
+        # whether the question is worth asking. check_auth_valid() then makes one
+        # real network call and is authoritative. Without the confirmation a
+        # misread log costs a 270-folder re-auth and a slot of the sweep budget;
+        # with it, the recovery also still fires for failures that surface with
+        # no auth wording at all (e.g. a bare "Failed to select notebook").
+        looks_like_auth = _is_auth_failure(output) or "failed to select notebook" in output.lower()
+        if (returncode != 0 and reauth_retries < MAX_SWEEP_REAUTHS
+                and looks_like_auth and not check_auth_valid()):
             reauth_retries += 1
             print("  (auth revoked mid-sweep — resolving live copy and retrying)")
             # Direction first: the folder that just failed isn't in flight, and

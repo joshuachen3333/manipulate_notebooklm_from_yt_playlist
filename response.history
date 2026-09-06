@@ -1519,3 +1519,79 @@ cd 書本B && manipulate_notebooklm_from_yt_playlist -r
 
 
 
+##     2026-08-11 01:55 CST
+
+###    User Prompt
+最好把這些會輪替, 弄死, 預設 default 的眉角補充進去 daily_*.md 和 相關的 .md 內
+
+###    result
+補完了，而且先做了一次全文稽核 —— **發現 9 處已經跟新預設矛盾**。文件是我這幾天逐次增修的，預設一倒轉，好幾句「每次呼叫都會輪替」這種無條件敘述就變成錯的（現在只對「手動指令」成立）。照順序讀會互相打架。
+
+## `daily_usage.md` 現在是操作面的權威
+
+**〈為什麼會壞〉改成以「誰還會換發」為主軸**，附指令層級的清單：
+
+```
+notebooklm list                  ← 會換發
+notebooklm source list           ← 會換發
+notebooklm source fulltext <id>  ← 會換發
+notebooklm status                ← 不會（只讀本機 context）
+```
+
+最後那行順帶解決一個陷阱：`status` 不能拿來當 auth 健康檢查（過期也照印）。
+
+**新增〈三個讓它很難察覺的性質〉** —— 這是我覺得最該寫下來的部分：
+
+1. **不會當場報錯**：肇事那次 `rc=0` 跑完，毒下一次呼叫才發作 → 你看到提示時兇手早就結束了
+2. **60 秒節流**：同樣的操作有時出事有時不出事 → 看起來像隨機，其實不是
+3. **症狀跟自然過期同形**：都是叫你 login，差別在「1–2 個月一次」vs「隨時」
+
+**新增〈預設值〉節**：為什麼關、循序執行同樣受害（sweep 只是事後自己收拾）、套件自述 poke 是 freshness optimisation、以及唯一該用 `--enable-keepalive` 的情況。
+
+踩雷筆記那段過時敘述改成指標，避免同一件事在兩處各說各話。
+
+## 另外兩份
+
+- **CLAUDE.md**：4 處無條件敘述加上限定
+- **PARALLEL_RUNS.md**：區分「套件本身的行為」與「這裡現在實際會發生的事」
+
+## 稽核結果
+
+| 檢查 | |
+|---|---|
+| 三份都說預設關閉 | ✓ |
+| 「必須每個都加 `--parallel`」殘留 | 已清乾淨 |
+| 三份都提到 `--enable-keepalive` | ✓ |
+| 三份都提到手動指令仍會換發 | ✓ |
+| 從文件抽出診斷腳本實跑 | ✓ 271 份 |
+
+順手把最後 1 份 STALE 副本對齊了（是 `台語漢字學短篇`），現在 **271 份全部一致**。
+
+
+
+
+##     2026-09-07 00:02 CST
+
+###    User Prompt
+which advisor model I am pointing to?
+
+###    result
+**Fable 5.1**（模型 ID `claude-fable-5-1`）。
+
+設定在 `~/.claude/settings.json:192`：
+
+```json
+"advisorModel": "fable",
+```
+
+`.claude/settings.json` 那一筆是同一行 —— 因為我當時的 cwd 是 `~`，`.claude/settings.json` 就是同一個檔案的相對路徑，不是專案內另有一份設定。這個 repo 的 `.claude/` 底下**沒有**任何 advisor 設定，所以走的是全域這一份。
+
+也沒有任何 `advisor` 相關的環境變數覆寫。
+
+---
+
+補充一點你可能會在意的：`advisor` 這個工具**不吃參數** —— 呼叫時會把我整段對話（任務、每一次 tool call、每一份結果）全部轉給它。所以這一整個 session 裡我用它的那幾次（決定四項待辦的做法、以及 `--carry_initial_prompt` 那次之前），它看到的是完整脈絡，不是我摘要過的版本。
+
+
+
+

@@ -1647,3 +1647,15 @@ write this down (to a .md)
 
 
 
+##     2026-09-07 00:02 CST
+
+###    User Prompt
+which advisor model I am pointing to?
+
+###    
+- Agent: `manipulate_notebooklm_from_yt_playlist-obe`
+- Hint: 詢問 advisor 工具指向哪個模型 —— 答案是 Fable 5.1（~/.claude/settings.json:192 的 advisorModel: fable），本 repo 無專案級覆寫、亦無環境變數覆寫
+
+
+
+
